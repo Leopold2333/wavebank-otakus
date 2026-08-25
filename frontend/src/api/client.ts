@@ -1,0 +1,512 @@
+export type FfmpegMode = 'bundled' | 'system' | 'custom';
+
+export interface FfmpegSettings {
+  mode: FfmpegMode;
+  bundled_dir: string;
+  custom_ffmpeg_path: string;
+  custom_ffprobe_path: string;
+  fallback_to_system: boolean;
+  timeout_seconds: number;
+  auto_download_source: boolean;
+  source_version: string;
+  download_url_template: string;
+}
+
+export interface PathSettings {
+  output_dir: string;
+  tmp_dir: string;
+}
+
+export interface TaskSettings {
+  max_workers: number;
+}
+
+export type AgentProvider = 'deepseek' | 'moonshot' | 'zhipu' | 'qwen' | 'custom';
+
+export interface AgentSettings {
+  provider: AgentProvider;
+  base_url: string;
+  model: string;
+  reasoning_effort: string;
+  thinking: boolean;
+  timeout_seconds: number;
+  api_key: string;
+  api_key_configured?: boolean;
+  api_key_source?: 'settings' | 'env' | 'none';
+}
+
+export interface Settings {
+  ffmpeg: FfmpegSettings;
+  paths: PathSettings;
+  tasks: TaskSettings;
+  agent: AgentSettings;
+  config_warning?: string;
+}
+
+export interface FfmpegCheckResult {
+  ok: boolean;
+  ffmpeg?: string;
+  ffprobe?: string;
+  source?: string;
+  mode?: string;
+  version?: string;
+  error?: string;
+}
+
+export interface HealthResponse {
+  status: 'ok' | 'degraded';
+  service: string;
+  platform: {
+    system: string;
+    machine: string;
+    python: string;
+  };
+  config_dir: string;
+  settings_path: string;
+  ffmpeg: FfmpegCheckResult;
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+  config_dir: string;
+  settings_path: string;
+  ffmpeg?: FfmpegCheckResult;
+}
+
+export interface AudioTaskParams {
+  inputFile: string;
+  outputFormat?: string;
+  outputFileName?: string;
+  volumeGain?: number;
+  loudnessTarget?: string;
+  truePeakMax?: number | 'source' | '';
+  channels?: string;
+  sampleRate?: string;
+  bitrate?: string;
+  audioTrack?: number;
+  startTime?: number;
+  duration?: number;
+  pitchSemitones?: number;
+  speed?: number;
+  denoiseStrength?: number;
+}
+
+export interface TaskOutput {
+  path: string;
+  size: number;
+}
+
+export interface TaskRecord {
+  id: string;
+  type: string;
+  conversation_id?: string | null;
+  intent?: string | null;
+  creation_mode?: 'new' | 'rebuild';
+  status: 'pending' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
+  progress: number;
+  tmp_dir: string;
+  params: AudioTaskParams;
+  input_params?: Record<string, unknown>;
+  output_params?: Record<string, unknown>;
+  config?: Record<string, unknown>;
+  target_path?: string | null;
+  command: string[] | null;
+  logs: string[];
+  outputs: TaskOutput[];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskMessage {
+  id: string;
+  task_id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  files: Array<{ id: string; name: string; path: string; size: number }>;
+  tool_calls: Array<{ name: string; args: Record<string, unknown>; result?: unknown }>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrowseEntry {
+  name: string;
+  path: string;
+  type: 'dir' | 'file';
+  size: number | null;
+  modified: number;
+}
+
+export interface BrowseResult {
+  path: string;
+  parent: string | null;
+  is_file: boolean;
+  entries: BrowseEntry[];
+}
+
+export interface AudioStreamInfo {
+  index: number;
+  codec_name: string;
+  codec_type: string;
+  sample_rate: string;
+  channels: number;
+  channel_layout: string;
+  bit_rate: string;
+}
+
+export interface AudioAnalysis {
+  peak_dB: number | null;
+  rms_dB: number | null;
+  dynamic_range_dB: number | null;
+  integrated_loudness_lufs: number | null;
+  loudness_range_lu: number | null;
+  true_peak_dbtp: number | null;
+}
+
+export interface FileStat {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+}
+
+export interface AudioInfo {
+  path: string;
+  name: string;
+  size: number;
+  container: string;
+  duration: number;
+  bit_rate: number;
+  has_video: boolean;
+  streams: AudioStreamInfo[];
+  analysis: AudioAnalysis;
+}
+
+const API_BASE = '/api';
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    ...options,
+  });
+  if (!response.ok) {
+    let message = `请求失败（${response.status}）`;
+    try {
+      const body = (await response.json()) as { error?: string };
+      if (body.error) {
+        message = body.error;
+      }
+    } catch {
+      // 保留默认错误信息
+    }
+    const error = new Error(message) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  return (await response.json()) as T;
+}
+
+export function getHealth(): Promise<HealthResponse> {
+  return request<HealthResponse>('/health');
+}
+
+export function getSettings(): Promise<SettingsResponse> {
+  return request<SettingsResponse>('/settings');
+}
+
+export function saveSettings(settings: Settings): Promise<SettingsResponse> {
+  return request<SettingsResponse>('/settings', {
+    method: 'POST',
+    body: JSON.stringify(settings),
+  });
+}
+
+export function checkFfmpeg(patch: Partial<Settings>): Promise<{ ffmpeg: FfmpegCheckResult }> {
+  return request<{ ffmpeg: FfmpegCheckResult }>('/settings/check-ffmpeg', {
+    method: 'POST',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function createAudioTask(
+  params: AudioTaskParams,
+  taskType = 'audio',
+  options: {
+    mode?: 'new' | 'rebuild';
+    taskId?: string;
+    timestamp?: number;
+    conversationId?: string;
+  } = {},
+): Promise<TaskRecord> {
+  return request<TaskRecord>('/tasks', {
+    method: 'POST',
+    body: JSON.stringify({
+      task_type: taskType,
+      params,
+      mode: options.mode ?? 'new',
+      task_id: options.taskId,
+      timestamp: options.timestamp,
+      conversation_id: options.conversationId,
+    }),
+  });
+}
+
+export interface AgentChatFile {
+  id: string;
+  name: string;
+  path: string;
+  size: number;
+}
+
+export interface AgentChatRequest {
+  conversation_id?: string;
+  content: string;
+  intent?: string | null;
+  subtype?: string | null;
+  params?: Record<string, unknown>;
+  files?: AgentChatFile[];
+  model?: string;
+  reasoning_effort?: string;
+  thinking?: boolean;
+}
+
+export interface AgentMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  files: Array<{ id: string; name: string; path: string; size: number }>;
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    arguments: string | Record<string, unknown>;
+    result?: unknown;
+  }>;
+  tool_call_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentConversationSummary {
+  id: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message: string | null;
+}
+
+export interface AgentChatHandlers {
+  onMeta?: (conversationId: string) => void;
+  onDelta?: (text: string) => void;
+  onToolCall?: (toolCall: {
+    id?: string;
+    name: string;
+    arguments: Record<string, unknown>;
+    result?: unknown;
+  }) => void;
+  onDone?: (message: AgentMessage) => void;
+  onError?: (error: string) => void;
+}
+
+function dispatchAgentEvent(raw: string, handlers: AgentChatHandlers) {
+  let event = 'message';
+  let data = '';
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      data += line.slice(5).trim();
+    }
+  }
+  if (!data) {
+    return;
+  }
+  let parsed: {
+    conversation_id?: string;
+    text?: string;
+    tool_call?: {
+      id?: string;
+      name: string;
+      arguments: Record<string, unknown>;
+      result?: unknown;
+    };
+    message?: AgentMessage;
+    error?: string;
+  };
+  try {
+    parsed = JSON.parse(data) as typeof parsed;
+  } catch {
+    return;
+  }
+  if (event === 'agent.meta') {
+    handlers.onMeta?.(parsed.conversation_id ?? '');
+  } else if (event === 'chat.delta') {
+    handlers.onDelta?.(parsed.text ?? '');
+  } else if (event === 'chat.tool_call') {
+    if (parsed.tool_call) {
+      handlers.onToolCall?.(parsed.tool_call);
+    }
+  } else if (event === 'chat.done') {
+    if (parsed.message) {
+      handlers.onDone?.(parsed.message);
+    }
+  } else if (event === 'chat.error') {
+    handlers.onError?.(parsed.error ?? '未知错误');
+  }
+}
+
+export function getAgentConversationMessages(
+  conversationId: string,
+): Promise<{ messages: AgentMessage[] }> {
+  return request<{ messages: AgentMessage[] }>(
+    `/agents/conversations/${conversationId}/messages`,
+  );
+}
+
+export function deleteAgentConversation(
+  conversationId: string,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/agents/conversations/${conversationId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function getAgentConversations(): Promise<{
+  conversations: AgentConversationSummary[];
+}> {
+  return request<{ conversations: AgentConversationSummary[] }>(
+    '/agents/conversations',
+  );
+}
+
+export async function streamAgentChat(
+  req: AgentChatRequest,
+  handlers: AgentChatHandlers,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/agents/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  if (!response.ok) {
+    let errorMessage = `请求失败（${response.status}）`;
+    try {
+      const body = (await response.json()) as { error?: string };
+      if (body.error) {
+        errorMessage = body.error;
+      }
+    } catch {
+      // 保留默认错误信息
+    }
+    handlers.onError?.(errorMessage);
+    return;
+  }
+  const reader = response.body?.getReader();
+  if (!reader) {
+    handlers.onError?.('当前浏览器不支持流式响应');
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    // 兼容 SSE 的 CRLF 分隔，避免事件长期停留在缓冲区不被解析
+    buffer = buffer.replace(/\r\n?/g, '\n');
+    let separator = buffer.indexOf('\n\n');
+    while (separator >= 0) {
+      const raw = buffer.slice(0, separator);
+      buffer = buffer.slice(separator + 2);
+      dispatchAgentEvent(raw, handlers);
+      separator = buffer.indexOf('\n\n');
+    }
+  }
+  // 流结束后仍可能有未带 \n\n 的尾部事件，统一在此兜底处理
+  buffer += decoder.decode();
+  buffer = buffer.replace(/\r\n?/g, '\n');
+  if (buffer.trim()) {
+    dispatchAgentEvent(buffer, handlers);
+  }
+}
+
+export interface AgentTestResult {
+  ok: boolean;
+  reply?: string;
+  model?: string;
+  latency_ms?: number;
+  error?: string;
+}
+
+export function testAgentConnection(agent: AgentSettings): Promise<AgentTestResult> {
+  return request<AgentTestResult>('/agents/test', {
+    method: 'POST',
+    body: JSON.stringify({ agent }),
+  });
+}
+
+export interface AgentModelInfo {
+  id: string;
+  owned_by?: string;
+}
+
+export interface AgentModelsResponse {
+  models: AgentModelInfo[];
+  base_url?: string;
+  default_model?: string;
+}
+
+export function getAgentModels(): Promise<AgentModelsResponse> {
+  return request<AgentModelsResponse>('/agents/models');
+}
+
+export function getTasks(): Promise<{ tasks: TaskRecord[] }> {
+  return request<{ tasks: TaskRecord[] }>('/tasks');
+}
+
+export function getTask(taskId: string): Promise<TaskRecord> {
+  return request<TaskRecord>(`/tasks/${taskId}`);
+}
+
+export function cancelTask(taskId: string): Promise<TaskRecord> {
+  return request<TaskRecord>(`/tasks/${taskId}/cancel`, { method: 'POST' });
+}
+
+export function deleteTask(taskId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/tasks/${taskId}`, { method: 'DELETE' });
+}
+
+export function getTaskMessages(taskId: string): Promise<{ messages: TaskMessage[] }> {
+  return request<{ messages: TaskMessage[] }>(`/tasks/${taskId}/messages`);
+}
+
+export function postTaskMessage(
+  taskId: string,
+  message: Pick<TaskMessage, 'role' | 'content' | 'files' | 'tool_calls'>,
+): Promise<TaskMessage> {
+  return request<TaskMessage>(`/tasks/${taskId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify(message),
+  });
+}
+
+export function browseLocalFiles(path?: string): Promise<BrowseResult> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  return request<BrowseResult>(`/files/browse${query}`);
+}
+
+export function getAudioInfo(path: string): Promise<AudioInfo> {
+  return request<AudioInfo>(`/audio/info?path=${encodeURIComponent(path)}`);
+}
+
+export function getFileStat(path: string): Promise<FileStat> {
+  return request<FileStat>(`/files/stat?path=${encodeURIComponent(path)}`);
+}
+
+export function getFileContentUrl(path: string): string {
+  return `/api/files/content?path=${encodeURIComponent(path)}`;
+}

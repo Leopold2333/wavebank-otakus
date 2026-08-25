@@ -1,0 +1,30 @@
+{
+  "ffmpeg": {
+    "mode": "bundled",
+    "bundled_dir": "backend/vendor/ffmpeg/bin",
+    "custom_ffmpeg_path": "",
+    "custom_ffprobe_path": "",
+    "fallback_to_system": true,
+    "timeout_seconds": 3600,
+    "auto_download_source": true,
+    "source_version": "9.0.1",
+    "download_url_template": "https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz"
+  },
+  "paths": {
+    "output_dir": "outputs",
+    "tmp_dir": "tmp",
+    "data_dir": "backend/data"
+  },
+  "tasks": {
+    "max_workers": 2
+  },
+  "agent": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "reasoning_effort": "high",
+    "thinking": true,
+    "timeout_seconds": 120,
+    "api_key": ""
+  }
+}

@@ -1,0 +1,59 @@
+.settings-page,
+.task-center-page {
+  min-height: 100%;
+}
+
+.settings-page .ant-card {
+  margin-bottom: 12px;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0 24px;
+  align-items: start;
+}
+
+.settings-grid > .ant-form-item {
+  min-width: 0;
+  margin-bottom: 16px;
+}
+
+.settings-grid .ant-select,
+.settings-grid .ant-input-number,
+.settings-grid .ant-input,
+.settings-grid .ant-input-affix-wrapper {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.task-center-page__detail pre {
+  max-height: 240px;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: #fafafa;
+  border: 1px solid rgba(5, 5, 5, 0.06);
+  border-radius: 8px;
+}
+
+.task-center-page__json-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.task-center-page__block pre {
+  margin-top: 6px;
+}
+
+.task-center-page__output {
+  margin-bottom: 4px;
+  font-size: 13px;
+}
