@@ -351,7 +351,7 @@ export function SettingsPage() {
   const ffmpegInfo = checkResult ?? health?.ffmpeg;
   const bundledFfmpegDir =
     ffmpegInfo?.bundled_ffmpeg?.replace(/[/\\][^/\\]+$/, '') ??
-    '/Users/gaobol/workspace/wavebank-otakus/backend/vendor/ffmpeg/ffmpeg-9.0.1';
+    '/Users/gaobol/workspace/wavebank-otakus/backend/vendor/ffmpeg/latest';
   const normalizedFfmpegPath = String(ffmpegExecutablePath || '').trim();
   const isFfmpegPathDirty = normalizedFfmpegPath !== savedFfmpegPath;
 

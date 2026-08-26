@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Built-in ffmpeg source downloader.
+"""Built-in ffmpeg prebuilt package manager.
 
 Usage:
-    python download-ffmpeg.py [--version 9.0.1] [--force] [--check]
+    python download-ffmpeg.py [--check] [--install] [--force]
 """
 
 from __future__ import annotations

@@ -63,7 +63,7 @@ npm run dev
 
 - 配置持久化：`config/settings.json`（用户覆盖项）与 `config/defaults.json`（项目默认值）
 - ffmpeg/ffprobe 封装：安全参数列表调用、进度解析、日志归档、任务取消
-- ffmpeg 启动检测、源码下载与自动构建模块：内置模式缺二进制/源码时自动下载解压到 `backend/vendor/ffmpeg/`，并在版本源码目录内构建可执行文件
+- ffmpeg 启动检测与预编译包管理：按平台自动下载/解压预编译 ffmpeg 到 `backend/vendor/ffmpeg/<版本号或 latest>/`，缺省时回退使用系统 PATH 中的 ffmpeg
 - 音频处理 LangGraph 工作流：五个二级功能各自独立封装为一张完整图（collect_params → probe_validate → execute → verify → summarize），并由父图 `router.py` 以“编译子图节点”的方式路由，见 `backend/workflows/audio/`
 - 音频二级任务类型：audio.convert / audio.extract / audio.trim / audio.pitch / audio.denoise，Schema 与任务接口已按二级类型隔离
 - 音频二级功能已接入真实 ffmpeg 命令：格式转换、视频提取音频、音频裁切、变速变调、背景去噪（afftdn）
@@ -109,17 +109,15 @@ WaveBank Otakus 定位是**本机处理工具**：WebUI 与 ffmpeg 运行在同�
 
 ## 内置 ffmpeg
 
-ffmpeg 9.0.1 源码会解压到 `backend/vendor/ffmpeg/ffmpeg-9.0.1/`。后端默认
-自动定位并使用版本源码目录内的 `ffmpeg(.exe)` / `ffprobe(.exe)`；无需把
-ffmpeg 注册到系统 PATH。若启动时缺少内置源码或二进制，后端会自动下载源码并
-在源码目录内构建可执行文件。
-
-也可以手动构建内置 ffmpeg：
+项目使用**预编译 ffmpeg**，不要求安装 C 编译器或从源码编译。后端查找
+ffmpeg 的顺序：自定义路径 → 系统 PATH（macOS 含 Homebrew 目录）→
+内置预编译包（`backend/vendor/ffmpeg/<版本号或 latest>/`）。都没有时，会按
+操作系统/架构自动下载预编译包：Linux 使用 BtbN/FFmpeg-Builds，
+Windows 使用 GyanD/codexffmpeg（自动拉取最新 release）；
+macOS 推荐 `brew install ffmpeg` 后由系统路径自动发现。
 
 ```bash
-cd backend/vendor/ffmpeg
-chmod +x build-ffmpeg.sh
-./build-ffmpeg.sh
+python backend/vendor/ffmpeg/download-ffmpeg.py --install
 ```
 
 Windows 见 [backend/vendor/ffmpeg/README.md](backend/vendor/ffmpeg/README.md)。

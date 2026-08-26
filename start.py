@@ -221,7 +221,7 @@ def main() -> None:
     frontend = start_process(frontend_command, FRONTEND_DIR, "frontend")
 
     try:
-        print("等待后端就绪；首次下载/编译内置 ffmpeg 时可能需要几分钟。")
+        print("等待后端就绪；首次自动下载内置 ffmpeg（预编译包）时可能需要几分钟。")
         if not wait_for_process_url(
             backend,
             f"{BACKEND_URL}/api/health",

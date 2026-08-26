@@ -28,20 +28,25 @@ $env:WAVEBANK_SETTINGS_PATH = "D:\path\to\settings.json"
 
 ## ffmpeg 路径策略
 
-后端默认使用项目内置 ffmpeg。可执行文件固定从版本源码目录自动定位：
+后端优先使用项目内置的预编译 ffmpeg，可执行文件按平台存放：
 
 ```text
-backend/vendor/ffmpeg/ffmpeg-<version>/ffmpeg(.exe)
-backend/vendor/ffmpeg/ffmpeg-<version>/ffprobe(.exe)
+backend/vendor/ffmpeg/<版本号或 latest>/ffmpeg(.exe)
+backend/vendor/ffmpeg/<版本号或 latest>/ffprobe(.exe)
 ```
 
 路径策略如下：
 
 - `ffmpeg.executable_path`：可选的自定义 `ffmpeg` 可执行文件绝对路径；
   后端会从同目录查找 `ffprobe`；
-- 如果该字段为空，后端使用项目内置版本，不依赖系统 PATH。
+  启动时若检测到系统 PATH 中的 ffmpeg 且此项为空，会自动写入系统 ffmpeg 路径；
+- 如果该字段为空，依次检查系统 PATH（macOS 含 Homebrew 目录）、
+  内置预编译包。
 
-需要使用项目内置版本时，后端启动会检测内置 ffmpeg；缺少源码时会按
-`source_version` 自动下载源码，缺少二进制时会自动执行
-`backend/vendor/ffmpeg/build-ffmpeg.sh`（Windows 使用 `build-ffmpeg.ps1`），
-并在版本源码目录内生成 `ffmpeg` 与 `ffprobe`。
+需要内置版本且本机没有时，后端启动会按 `ffmpeg.prebuilt_urls` 中当前平台
+的地址自动下载预编译包并解压到 `backend/vendor/ffmpeg/<版本号>/`
+（下载地址里没有明确版本号时用 `latest/`）；其中
+Windows 的地址含 `{version}` 占位符，会先从
+`ffmpeg.prebuilt_release_lists` 配置的 GitHub release 列表取最新版本号。
+下载完成后会把实际路径写入 `ffmpeg.prebuilt_installed_path`（保存在
+`config/settings.json`）。

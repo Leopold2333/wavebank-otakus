@@ -23,7 +23,7 @@ from .config import (
     resolve_project_path,
     save_settings,
 )
-from .ffmpeg.setup import ensure_bundled_runtime
+from .ffmpeg.setup import ensure_prebuilt_runtime
 from .schemas import SCHEMAS
 from .secrets import (
     normalize_saved_api_key,
@@ -582,24 +582,68 @@ def create_app() -> Flask:
         settings = load_settings()
         info = get_ffmpeg_info(settings)
         if info["ok"]:
+            encoders = info.get("encoders") or []
             app.logger.info(
-                "ffmpeg 就绪：%s（来源：%s）",
+                "ffmpeg 就绪：%s（来源：%s；编码器：%s）",
                 info["ffmpeg"],
                 info.get("source"),
+                "、".join(encoders) if encoders else "未知",
             )
+            try:
+                current = load_settings()
+                if info.get("source") == "system" and not str(
+                    current.get("ffmpeg", {}).get("executable_path") or ""
+                ).strip():
+                    save_settings(
+                        {"ffmpeg": {"executable_path": info["ffmpeg"]}}
+                    )
+                    app.logger.info("已将系统 ffmpeg 路径写入配置：%s", info["ffmpeg"])
+                elif info.get("source") == "bundled":
+                    installed = str(
+                        current.get("ffmpeg", {}).get(
+                            "prebuilt_installed_path"
+                        )
+                        or ""
+                    ).strip()
+                    if installed != info["ffmpeg"]:
+                        save_settings(
+                            {
+                                "ffmpeg": {
+                                    "prebuilt_installed_path": info["ffmpeg"]
+                                }
+                            }
+                        )
+                        app.logger.info(
+                            "已将本地 ffmpeg 路径写入配置：%s", info["ffmpeg"]
+                        )
+            except Exception as exc:  # noqa: BLE001 - 启动时写配置失败不应阻断服务
+                app.logger.warning("写入 ffmpeg 路径配置失败：%s", exc)
             return
 
         if str(settings.get("ffmpeg", {}).get("executable_path") or "").strip():
             app.logger.warning("ffmpeg 不可用：%s", info.get("error"))
             return
 
-        result = ensure_bundled_runtime(settings)
+        result = ensure_prebuilt_runtime(settings)
         if result["ok"]:
-            app.logger.info("内置 ffmpeg 已就绪：%s", result.get("ffmpeg"))
+            encoders = result.get("encoders") or []
+            app.logger.info(
+                "内置 ffmpeg 已就绪%s：%s",
+                "（本次自动下载）" if result.get("downloaded") else "",
+                result.get("ffmpeg"),
+            )
+            if encoders:
+                app.logger.info("内置 ffmpeg 编码器：%s", "、".join(encoders))
+            if result.get("missing_encoders"):
+                app.logger.warning(
+                    "内置 ffmpeg 缺少编码器：%s",
+                    "、".join(result["missing_encoders"]),
+                )
         else:
-            if result.get("output_tail"):
-                app.logger.warning("ffmpeg 构建输出末尾：\n%s", result["output_tail"])
-            app.logger.warning("ffmpeg 不可用：%s", result.get("error"))
+            app.logger.warning(
+                "内置 ffmpeg 不可用：%s。可安装系统 ffmpeg 或在设置页指定路径。",
+                result.get("error"),
+            )
 
     run_ffmpeg_startup_check()
 

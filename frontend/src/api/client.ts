@@ -1,8 +1,9 @@
 export interface FfmpegSettings {
   executable_path: string;
   timeout_seconds: number;
-  source_version: string;
-  download_url_template: string;
+  prebuilt_installed_path?: string;
+  prebuilt_urls: Record<string, string>;
+  prebuilt_release_lists?: Record<string, string>;
 }
 
 export interface PathSettings {

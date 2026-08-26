@@ -237,13 +237,10 @@ backend/data/*.db*
 backend/data/*.json
 logs/
 
-# ffmpeg build artifacts
+# ffmpeg 预编译包与下载缓存
 ffmpeg*.tar.xz
-backend/vendor/ffmpeg/ffmpeg-*/
+backend/vendor/ffmpeg/*/
 backend/vendor/ffmpeg/*.tar.xz
-backend/vendor/ffmpeg/ffmpeg-9.0.1/config.mak
-backend/vendor/ffmpeg/ffmpeg-9.0.1/ffbuild/config.mak
+backend/vendor/ffmpeg/*.zip
 !backend/vendor/ffmpeg/README.md
 !backend/vendor/ffmpeg/download-ffmpeg.py
-!backend/vendor/ffmpeg/build-ffmpeg.sh
-!backend/vendor/ffmpeg/build-ffmpeg.ps1

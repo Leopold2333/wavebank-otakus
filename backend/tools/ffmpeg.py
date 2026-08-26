@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -11,7 +13,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import PROJECT_ROOT, load_settings, resolve_project_path
-from ..ffmpeg.setup import bundled_binary_paths
+from ..ffmpeg.setup import (
+    missing_required_encoders,
+    prebuilt_binary_paths,
+    read_ffmpeg_encoders,
+)
 
 
 class FfmpegNotFound(RuntimeError):
@@ -26,11 +32,30 @@ def executable_suffix() -> str:
     return ".exe" if os.name == "nt" else ""
 
 
+def _find_system_ffmpeg() -> Path | None:
+    """Find ffmpeg on PATH; on macOS also probe Homebrew locations."""
+    candidates: list[Path] = []
+    found = shutil.which("ffmpeg")
+    if found:
+        candidates.append(Path(found).resolve())
+    if platform.system() == "Darwin":
+        candidates.extend(
+            [
+                Path("/opt/homebrew/bin/ffmpeg"),
+                Path("/usr/local/bin/ffmpeg"),
+            ]
+        )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_binaries(settings: dict[str, Any] | None = None) -> dict[str, str]:
     """Resolve ffmpeg/ffprobe executables according to the current settings."""
     settings = settings or load_settings()
     ffmpeg_cfg = settings.get("ffmpeg", {})
-    paths = bundled_binary_paths(settings)
+    paths = prebuilt_binary_paths(settings)
 
     configured_path = str(ffmpeg_cfg.get("executable_path") or "").strip()
     if configured_path:
@@ -50,24 +75,32 @@ def resolve_binaries(settings: dict[str, Any] | None = None) -> dict[str, str]:
             "source": "configured",
         }
 
-    ffmpeg_path = paths["ffmpeg"] if paths["ffmpeg"].exists() else None
-    ffprobe_path = paths["ffprobe"] if paths["ffprobe"].exists() else None
-
-    if not ffmpeg_path:
+    system_ffmpeg = _find_system_ffmpeg()
+    if system_ffmpeg:
+        ffmpeg_path = system_ffmpeg
+        ffprobe_path = ffmpeg_path.with_name(f"ffprobe{executable_suffix()}")
+        if ffprobe_path.is_file():
+            return {
+                "ffmpeg": str(ffmpeg_path),
+                "ffprobe": str(ffprobe_path),
+                "source": "system",
+            }
         raise FfmpegNotFound(
-            "未找到内置 ffmpeg。"
-            "内置模式会在源码就绪后自动构建可执行文件。"
-        )
-    if not ffprobe_path:
-        raise FfmpegNotFound(
-            "未找到 ffprobe。内置模式会在源码就绪后自动构建可执行文件。"
+            f"PATH 中找到 ffmpeg（{ffmpeg_path}），但同目录未找到 ffprobe。"
         )
 
-    return {
-        "ffmpeg": str(ffmpeg_path),
-        "ffprobe": str(ffprobe_path),
-        "source": "bundled",
-    }
+    if paths["ffmpeg"].is_file() and paths["ffprobe"].is_file():
+        return {
+            "ffmpeg": str(paths["ffmpeg"]),
+            "ffprobe": str(paths["ffprobe"]),
+            "source": "bundled",
+        }
+
+    raise FfmpegNotFound(
+        "未找到可用 ffmpeg：没有配置自定义路径，内置预编译包未安装，"
+        "PATH 中也没有 ffmpeg。启动时会按平台自动下载预编译包，"
+        "或在设置页填写自定义 ffmpeg 路径。"
+    )
 
 
 def ffmpeg_version(ffmpeg_path: str) -> str:
@@ -85,7 +118,7 @@ def ffmpeg_version(ffmpeg_path: str) -> str:
 
 def get_ffmpeg_info(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     settings = settings or load_settings()
-    bundled_paths = bundled_binary_paths(settings)
+    bundled_paths = prebuilt_binary_paths(settings)
     bundled_info = {
         "bundled_ffmpeg": str(bundled_paths["ffmpeg"]),
         "bundled_ffprobe": str(bundled_paths["ffprobe"]),
@@ -93,7 +126,19 @@ def get_ffmpeg_info(settings: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         resolved = resolve_binaries(settings)
         version = ffmpeg_version(resolved["ffmpeg"])
-        return {"ok": True, "version": version, **bundled_info, **resolved}
+        encoders = read_ffmpeg_encoders(resolved["ffmpeg"])
+        missing = missing_required_encoders(encoders)
+        info = {
+            "ok": not missing,
+            "version": version,
+            "encoders": sorted(encoders),
+            "missing_encoders": missing,
+            **bundled_info,
+            **resolved,
+        }
+        if missing:
+            info["error"] = "ffmpeg 缺少必需编码器：" + "、".join(missing)
+        return info
     except Exception as exc:  # noqa: BLE001 - API 层需要把错误序列化给前端
         return {"ok": False, "error": str(exc), **bundled_info}
 
@@ -520,6 +565,9 @@ def build_audio_command(
 
     # 当前阶段只处理音频；即使输入是视频，也只保留音轨。
     command += ["-vn"]
+    # 未链接 libvorbis 时，原生 Vorbis 编码器标记为 experimental，需要显式放行。
+    if Path(output_path).suffix.lower() in {".ogg", ".oga"}:
+        command += ["-strict", "experimental"]
     command.append(output_path)
     return command
 
