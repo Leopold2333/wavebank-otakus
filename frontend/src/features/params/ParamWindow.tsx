@@ -17,13 +17,11 @@ import { useTaskCacheStore } from '../../store/taskCache';
 interface ParamWindowProps {
   activeIntent: IntentId | null;
   activeSubtype: AudioSubtypeId | null;
-  mediaKind: 'none' | 'audio' | 'video';
   onSelectIntent: (intent: IntentId | null) => void;
   onSelectSubtype: (subtype: AudioSubtypeId) => void;
   onTaskCreated?: (taskId: string, mode: 'new' | 'rebuild') => void;
   taskPending?: boolean;
   taskPendingMode?: 'new' | 'rebuild' | null;
-  resultMode?: boolean;
   restoreTask?: { taskId: string; token: number } | null;
 }
 
@@ -32,22 +30,17 @@ const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
 export function ParamWindow({
   activeIntent,
   activeSubtype,
-  mediaKind,
   onSelectIntent,
   onSelectSubtype,
   onTaskCreated,
   taskPending,
   taskPendingMode,
-  resultMode,
   restoreTask,
 }: ParamWindowProps) {
   const { attachments, removeAttachment } = useFileAttachments();
   const clearTaskInput = useTaskCacheStore((state) => state.clearInput);
   const intent = activeIntent ? INTENT_MAP[activeIntent] : null;
-  const effectiveSubtype =
-    activeSubtype === 'extract' && mediaKind !== 'video' && !resultMode
-      ? DEFAULT_AUDIO_SUBTYPE
-      : (activeSubtype ?? DEFAULT_AUDIO_SUBTYPE);
+  const effectiveSubtype = activeSubtype ?? DEFAULT_AUDIO_SUBTYPE;
 
   const handleReselectFile = () => {
     for (const attachment of attachments) {
@@ -104,7 +97,6 @@ export function ParamWindow({
                 value={effectiveSubtype}
                 options={AUDIO_SUBTYPES.map((subtype) => ({
                   value: subtype.id,
-                  disabled: subtype.id === 'extract' && mediaKind !== 'video',
                   label: (
                     <Tooltip title={subtype.description}>
                       <Space>

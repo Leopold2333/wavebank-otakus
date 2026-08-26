@@ -181,6 +181,9 @@ def _analyze_audio(audio_path: str, ffmpeg_path: str, timeout: int = 120) -> dic
             "-nostdin",
             "-i",
             audio_path,
+            "-map",
+            "0:a:0?",
+            "-vn",
             "-af",
             "astats=metadata=0",
             "-f",
@@ -220,6 +223,9 @@ def _analyze_loudness(audio_path: str, ffmpeg_path: str, timeout: int = 120) -> 
             "-nostdin",
             "-i",
             audio_path,
+            "-map",
+            "0:a:0?",
+            "-vn",
             "-af",
             "ebur128=peak=true",
             "-f",
@@ -269,13 +275,23 @@ def probe_audio_details(
     settings = settings or load_settings()
     binaries = resolve_binaries(settings)
     probe = probe_audio(audio_path, binaries["ffprobe"])
-    analysis = _analyze_audio(audio_path, binaries["ffmpeg"])
-    analysis.update(_analyze_loudness(audio_path, binaries["ffmpeg"]))
 
     path = Path(audio_path).resolve()
     path_stat = path.stat()
 
     format_info = probe.get("format", {})
+    raw_streams = probe.get("streams", [])
+    has_video = any(
+        stream.get("codec_type") == "video"
+        and not (stream.get("disposition") or {}).get("attached_pic", 0)
+        for stream in raw_streams
+    )
+    # 视频文件只做轻量探测（时长/流信息），不执行全量解码与响度分析。
+    analysis: dict[str, Any] = {}
+    if not has_video:
+        analysis = _analyze_audio(audio_path, binaries["ffmpeg"])
+        analysis.update(_analyze_loudness(audio_path, binaries["ffmpeg"]))
+
     streams = [
         {
             "index": stream.get("index"),
@@ -287,7 +303,7 @@ def probe_audio_details(
             "bit_rate": stream.get("bit_rate"),
             "disposition": stream.get("disposition"),
         }
-        for stream in probe.get("streams", [])
+        for stream in raw_streams
     ]
     try:
         duration = float(format_info.get("duration", 0) or 0)
@@ -297,12 +313,6 @@ def probe_audio_details(
         bit_rate = int(format_info.get("bit_rate", 0) or 0)
     except (TypeError, ValueError):
         bit_rate = 0
-
-    has_video = any(
-        stream.get("codec_type") == "video"
-        and not (stream.get("disposition") or {}).get("attached_pic", 0)
-        for stream in streams
-    )
 
     return {
         "path": str(path),

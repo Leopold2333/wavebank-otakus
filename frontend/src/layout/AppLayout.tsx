@@ -11,8 +11,6 @@ import {
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AUDIO_SUBTYPES } from '../features/params/audioSubtypes';
 import { INTENT_DEFINITIONS } from '../features/params/intentRegistry';
-import { useFileAttachments } from '../features/files/FileAttachmentsContext';
-import { isVideoPath } from '../utils/format';
 
 const { Content, Header, Sider } = Layout;
 
@@ -37,13 +35,6 @@ export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { attachments } = useFileAttachments();
-
-  const mediaKind = attachments[0]?.path
-    ? isVideoPath(attachments[0].path)
-      ? 'video'
-      : 'audio'
-    : 'none';
 
   const menuItems = useMemo(
     () => [
@@ -61,7 +52,6 @@ export function AppLayout() {
             children: AUDIO_SUBTYPES.map((subtype) => ({
               key: `audio/${subtype.id}`,
               label: subtype.label,
-              disabled: subtype.id === 'extract' && mediaKind !== 'video',
             })),
           };
         }
@@ -75,7 +65,7 @@ export function AppLayout() {
       TASK_CENTER_MENU_ITEM,
       ...NON_INTENT_MENU_ITEMS.slice(1),
     ],
-    [mediaKind],
+    [],
   );
 
   const selectedKey =

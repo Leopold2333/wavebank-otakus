@@ -10,9 +10,9 @@ import { Button, Slider } from 'antd';
 import {
   MutedOutlined,
   PauseOutlined,
-  PlayCircleFilled,
   SoundOutlined,
 } from '@ant-design/icons';
+import playIconUrl from './play.svg';
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -143,11 +143,13 @@ export function StyledMediaPlayer({ src, kind, variant = 'input' }: StyledMediaP
   const [playing, setPlaying] = useState(false);
   const [volume, setVolume] = useState(0.3);
   const [muted, setMuted] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
 
   useEffect(() => {
     setPlaying(false);
     setVolume(0.3);
     setMuted(false);
+    setControlsVisible(true);
   }, [src]);
 
   useEffect(() => {
@@ -195,12 +197,17 @@ export function StyledMediaPlayer({ src, kind, variant = 'input' }: StyledMediaP
     <div
       className={`styled-media-player styled-media-player--${kind}${
         variant === 'output' ? ' styled-media-player--output' : ''
-      }`}
+      }${kind === 'video' && !controlsVisible ? ' styled-media-player--controls-hidden' : ''}`}
+      onMouseEnter={() => setControlsVisible(true)}
+      onMouseLeave={() => setControlsVisible(false)}
+      onFocus={() => setControlsVisible(true)}
+      onClick={kind === 'video' ? togglePlay : undefined}
     >
       {kind === 'video' ? (
         <video
           ref={mediaRef as React.Ref<HTMLVideoElement>}
           src={src}
+          preload="metadata"
           playsInline
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
@@ -209,20 +216,29 @@ export function StyledMediaPlayer({ src, kind, variant = 'input' }: StyledMediaP
         <audio
           ref={mediaRef as React.Ref<HTMLAudioElement>}
           src={src}
+          preload="metadata"
           style={{ display: 'none' }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />
       )}
 
-      <div className="styled-media-player__controls">
+      <div
+        className="styled-media-player__controls"
+        onClick={(event) => event.stopPropagation()}
+      >
         <Button
           type="text"
           icon={
             playing ? (
               <PauseOutlined style={{ fontSize: 22 }} />
             ) : (
-              <PlayCircleFilled style={{ fontSize: 22 }} />
+              <img
+                src={playIconUrl}
+                alt=""
+                className="styled-media-player__play-icon"
+                draggable={false}
+              />
             )
           }
           onClick={togglePlay}

@@ -28,6 +28,7 @@ import {
   type AudioSubtypeId,
 } from './audioSubtypes';
 import { INTENT_MAP, type IntentField } from './intentRegistry';
+import { isVideoPath } from '../../utils/format';
 
 const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
 
@@ -278,6 +279,10 @@ export function IntentConfigPanel({
     const inputFileValue = values.inputFile || attachments[0]?.path;
     if (!inputFileValue) {
       message.warning('请先添加文件，或填写输入文件路径');
+      return;
+    }
+    if (audioSubtype?.id === 'extract' && !isVideoPath(String(inputFileValue))) {
+      message.error('不支持使用音频文件作为输入');
       return;
     }
     const currentEntry =

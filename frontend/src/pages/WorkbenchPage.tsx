@@ -36,11 +36,9 @@ export function WorkbenchPage() {
     activeIntent === 'audio' && isAudioSubtypeId(segments[1]) ? segments[1] : null;
   const urlConversationId =
     segments[0] === 'chat' && segments[1] ? segments[1] : null;
-  const [mediaKind, setMediaKind] = useState<'none' | 'audio' | 'video'>('none');
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskPending, setTaskPending] = useState(false);
   const [pendingMode, setPendingMode] = useState<'new' | 'rebuild' | null>(null);
-  const [restorePending, setRestorePending] = useState(false);
   const [restoreRequest, setRestoreRequest] = useState<{
     taskId: string;
     token: number;
@@ -55,8 +53,14 @@ export function WorkbenchPage() {
   const inputPath = attachments[0]?.path;
   const conversationId = useAgentConversationStore((state) => state.conversationId);
   const agentStreaming = useAgentConversationStore((state) => state.streaming);
+  const conversationLoading = useAgentConversationStore(
+    (state) => state.conversationLoading,
+  );
   const setConversation = useAgentConversationStore((state) => state.setConversation);
   const setMessages = useAgentConversationStore((state) => state.setMessages);
+  const setConversationLoading = useAgentConversationStore(
+    (state) => state.setConversationLoading,
+  );
   const resetConversation = useAgentConversationStore((state) => state.reset);
   const setConversationFile = useAgentConversationStore(
     (state) => state.setConversationFile,
@@ -81,7 +85,6 @@ export function WorkbenchPage() {
       return;
     }
     workbenchEnteredRef.current = true;
-    setMediaKind('none');
     // 进入 Agent 工作台：解除人工参数任务输入文件的渲染（任务缓存保留）。
     // 如果当前会话自己附加过文件，则恢复该会话的文件而不是清空。
     const conversationFile = selectConversationFile(
@@ -122,8 +125,18 @@ export function WorkbenchPage() {
         setLocalPaths([]);
         setAgentOutputFile(null);
       }
+      setConversationLoading(false);
+    } else if (activeIntent) {
+      // 进入人工参数页时清掉可能残留的会话加载状态，避免切回后一直转圈。
+      setConversationLoading(false);
     }
-  }, [activeIntent, resetConversation, setLocalPaths, urlConversationId]);
+  }, [
+    activeIntent,
+    resetConversation,
+    setConversationLoading,
+    setLocalPaths,
+    urlConversationId,
+  ]);
 
   // 进入人工参数页时，清掉属于 Agent 会话的附件（会话缓存仍保留，
   // 切回会话时会重新写回）；人工参数页自己选择的文件不受影响。
@@ -147,6 +160,7 @@ export function WorkbenchPage() {
     setMessages([]);
     setAgentOutputFile(null);
     setConversation(urlConversationId);
+    setConversationLoading(true);
     const conversationFile =
       useAgentConversationStore.getState().files[urlConversationId] ?? null;
     setLocalPaths(
@@ -165,6 +179,7 @@ export function WorkbenchPage() {
     urlConversationId,
     conversationId,
     setConversation,
+    setConversationLoading,
     setLocalPaths,
     setMessages,
   ]);
@@ -176,10 +191,8 @@ export function WorkbenchPage() {
     } | null;
     const taskId = resultState?.taskId;
     if (!taskId) {
-      setRestorePending(false);
       return;
     }
-    setRestorePending(true);
     let cancelled = false;
     void (async () => {
       try {
@@ -218,10 +231,6 @@ export function WorkbenchPage() {
         setRestoreRequest((prev) => ({ taskId, token: (prev?.token ?? 0) + 1 }));
       } catch {
         // 任务已被删除等情况：保留输出文件展示即可
-      } finally {
-        if (!cancelled) {
-          setRestorePending(false);
-        }
       }
     })();
     return () => {
@@ -271,9 +280,6 @@ export function WorkbenchPage() {
   }, [activeTaskId, message, updateOutput]);
 
   const handleSelectIntent = (intent: IntentId | null) => {
-    if (intent !== 'audio') {
-      setMediaKind('none');
-    }
     navigate(
       intent === 'audio' ? `/audio/${DEFAULT_AUDIO_SUBTYPE}` : intent ? `/${intent}` : '/chat',
     );
@@ -301,6 +307,7 @@ export function WorkbenchPage() {
     setMessages([]);
     setAgentOutputFile(null);
     setConversation(selectedConversationId);
+    setConversationLoading(true);
     navigate(`/chat/${selectedConversationId}`);
     const conversationFile =
       useAgentConversationStore.getState().files[selectedConversationId] ?? null;
@@ -370,21 +377,10 @@ export function WorkbenchPage() {
     [conversationId, setConversationFile, setLocalPaths],
   );
 
-  useEffect(() => {
-    if (
-      mediaKind !== 'video' &&
-      activeSubtype === 'extract' &&
-      !outputFile &&
-      !restorePending
-    ) {
-      navigate(`/audio/${DEFAULT_AUDIO_SUBTYPE}`);
-    }
-  }, [mediaKind, activeSubtype, navigate, outputFile, restorePending]);
-
   return (
     <div className="workbench">
       {activeIntent !== 'batch' ? (
-        <AudioFilePanel onMediaKindChange={setMediaKind} outputFile={outputFile} />
+        <AudioFilePanel outputFile={outputFile} />
       ) : null}
       {activeIntent ? (
         <ParamWindow
@@ -392,13 +388,11 @@ export function WorkbenchPage() {
           activeSubtype={
             activeIntent === 'audio' ? (activeSubtype ?? DEFAULT_AUDIO_SUBTYPE) : null
           }
-          mediaKind={mediaKind}
           onSelectIntent={handleSelectIntent}
           onSelectSubtype={handleSelectSubtype}
           onTaskCreated={handleTaskCreated}
           taskPending={taskPending}
           taskPendingMode={pendingMode}
-          resultMode={!!outputFile}
           restoreTask={restoreRequest}
         />
       ) : (
@@ -406,7 +400,7 @@ export function WorkbenchPage() {
           <AgentConversationSidebar
             activeConversationId={conversationId}
             refreshKey={agentRefreshKey}
-            disabled={agentStreaming}
+            disabled={agentStreaming || conversationLoading}
             onSelect={handleSelectConversation}
             onNewConversation={handleNewConversation}
             onDelete={handleDeleteConversation}

@@ -1,5 +1,5 @@
-import { Suspense, useEffect, useRef, useState } from 'react';
-import { App, Button, Input, Tag, Tooltip } from 'antd';
+import { startTransition, Suspense, useEffect, useRef, useState } from 'react';
+import { App, Button, Collapse, Input, Spin, Tag, Tooltip } from 'antd';
 import {
   EditOutlined,
   FolderOpenOutlined,
@@ -81,15 +81,27 @@ function createMessage(
 function toChatToolCalls(
   toolCalls: AgentMessage['tool_calls'],
 ): AgentToolCall[] | undefined {
-  const mapped = (toolCalls ?? []).map((call) => ({
-    id: call.id,
-    name: call.name,
-    arguments:
-      typeof call.arguments === 'string'
-        ? {}
-        : (call.arguments as Record<string, unknown>),
-    result: call.result,
-  }));
+  const mapped = (toolCalls ?? []).map((call) => {
+    let args: Record<string, unknown> = {};
+    if (call.arguments && typeof call.arguments === 'object') {
+      args = call.arguments as Record<string, unknown>;
+    } else if (typeof call.arguments === 'string') {
+      try {
+        const parsed = JSON.parse(call.arguments) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // 参数不是合法 JSON 时保留为空，避免展开时崩溃
+      }
+    }
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: args,
+      result: call.result,
+    };
+  });
   return mapped.length > 0 ? mapped : undefined;
 }
 
@@ -127,6 +139,67 @@ function getTaskToolResult(call: AgentToolCall): TaskToolResult | null {
     return null;
   }
   return result as TaskToolResult;
+}
+
+function formatToolValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '—';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return JSON.stringify(value, null, 2) ?? String(value);
+}
+
+function ToolCallArguments({ args }: { args?: Record<string, unknown> }) {
+  const entries = Object.entries(args ?? {});
+  if (entries.length === 0) {
+    return <div className="message__tool-empty">无参数</div>;
+  }
+  return (
+    <dl className="message__tool-params">
+      {entries.map(([name, value]) => (
+        <div className="message__tool-param" key={name}>
+          <dt className="message__tool-param-name">{name}</dt>
+          <dd className="message__tool-param-value">{formatToolValue(value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function ToolCallResult({ result }: { result?: unknown }) {
+  if (result === undefined) {
+    return null;
+  }
+  const text =
+    typeof result === 'string'
+      ? result
+      : JSON.stringify(result, null, 2) ?? String(result);
+  return <pre className="message__tool-result">{text}</pre>;
+}
+
+function getToolCallSummary(call: AgentToolCall): string {
+  const result = asRecord(call.result);
+  if (typeof result?.task_id === 'string') {
+    return `任务 ${result.task_id.slice(0, 8)}${
+      result.status ? ` · ${result.status}` : ''
+    }`;
+  }
+  if (typeof result?.error === 'string') {
+    return result.error;
+  }
+  const args = call.arguments ?? {};
+  if (Object.keys(args).length > 0) {
+    return JSON.stringify(args);
+  }
+  if (result && Object.keys(result).length > 0) {
+    return JSON.stringify(result);
+  }
+  return '已调用';
 }
 
 function latestUserFile(messages: ChatMessage[]) {
@@ -181,6 +254,12 @@ export function AgentChat({
   const setStreaming = useAgentConversationStore((state) => state.setStreaming);
   const setStreamingMessageId = useAgentConversationStore(
     (state) => state.setStreamingMessageId,
+  );
+  const conversationLoading = useAgentConversationStore(
+    (state) => state.conversationLoading,
+  );
+  const setConversationLoading = useAgentConversationStore(
+    (state) => state.setConversationLoading,
   );
   const resetConversation = useAgentConversationStore((state) => state.reset);
   const setConversationFile = useAgentConversationStore(
@@ -285,8 +364,9 @@ export function AgentChat({
     () => () => {
       Object.values(taskPollersRef.current).forEach(window.clearInterval);
       taskPollersRef.current = {};
+      setConversationLoading(false);
     },
-    [],
+    [setConversationLoading],
   );
 
   useEffect(() => {
@@ -323,11 +403,16 @@ export function AgentChat({
       useAgentConversationStore.getState().streamingMessageId
     ) {
       // 正在流式输出：本地消息由事件驱动，禁止用后端半成品快照覆盖
+      setConversationLoading(false);
       return;
     }
     if (streamErrorRef.current) {
       streamErrorRef.current = false;
+      setConversationLoading(false);
       return;
+    }
+    if (useAgentConversationStore.getState().messages.length === 0) {
+      setConversationLoading(true);
     }
     let cancelled = false;
     void (async () => {
@@ -342,6 +427,7 @@ export function AgentChat({
           useAgentConversationStore.getState().streamingMessageId
         ) {
           // 请求期间流式输出已开始，放弃这次可能过期的快照
+          setConversationLoading(false);
           return;
         }
         const restored = serverMessages
@@ -349,12 +435,15 @@ export function AgentChat({
           .map((item) => fromAgentMessage(item));
         // 服务端有消息时以后端为准；服务端为空时保留本地乐观消息，
         // 避免覆盖刚发出的尚未落库的消息。
-        if (
+        const shouldReplace =
           restored.length > 0 ||
-          useAgentConversationStore.getState().messages.length === 0
-        ) {
-          setMessages(restored);
-        }
+          useAgentConversationStore.getState().messages.length === 0;
+        startTransition(() => {
+          if (shouldReplace) {
+            setMessages(restored);
+          }
+          setConversationLoading(false);
+        });
         const file = latestUserFile(restored);
         if (file) {
           setConversationFile(conversationId, {
@@ -366,8 +455,11 @@ export function AgentChat({
         }
         watchMessageTaskOutputs(restored);
       } catch (error) {
-        if (!cancelled && (error as { status?: number }).status === 404) {
-          resetConversation();
+        if (!cancelled) {
+          if ((error as { status?: number }).status === 404) {
+            resetConversation();
+          }
+          setConversationLoading(false);
         }
       }
     })();
@@ -377,6 +469,7 @@ export function AgentChat({
   }, [
     conversationId,
     resetConversation,
+    setConversationLoading,
     setConversationFile,
     setLocalPaths,
     setMessages,
@@ -390,7 +483,7 @@ export function AgentChat({
       size,
       path,
     }));
-    if ((!text && files.length === 0) || streaming) {
+    if ((!text && files.length === 0) || streaming || conversationLoading) {
       return;
     }
 
@@ -592,7 +685,9 @@ export function AgentChat({
   const currentIntent = activeIntent ? INTENT_MAP[activeIntent] : null;
   const currentSubtype = activeSubtype ? getAudioSubtype(activeSubtype) : null;
   const canSend =
-    !streaming && (draft.trim().length > 0 || attachments.length > 0);
+    !streaming &&
+    !conversationLoading &&
+    (draft.trim().length > 0 || attachments.length > 0);
 
   const handleRemoveAttachment = (id: string) => {
     const target = attachments.find((attachment) => attachment.id === id);
@@ -629,78 +724,87 @@ export function AgentChat({
         {conversationId ? <Tag>会话 {conversationId.slice(0, 8)}…</Tag> : null}
       </div>
 
-      <div className="agent-chat__messages">
-        {displayMessages.map((message, index) => (
-          <div key={message.id} className={`message message--${message.role}`}>
-            <div className="message__body">
-              {message.content ||
-                (streaming && message.id === displayMessages.at(-1)?.id
-                  ? message.toolCalls && message.toolCalls.length > 0
-                    ? '正在调用工具…'
-                    : '正在思考…'
-                  : '')}
-            </div>
-            {message.role === 'user' && messages.some((item) => item.id === message.id) ? (
-              <div className="message__actions">
-                <Tooltip title="回到这里编辑">
-                  <Button
-                    type="text"
+      <Spin
+        spinning={conversationLoading}
+        description="正在加载会话…"
+        size="large"
+        rootClassName="agent-chat__spin"
+      >
+        <div className="agent-chat__messages">
+          {displayMessages.map((message, index) => (
+            <div key={message.id} className={`message message--${message.role}`}>
+              <div className="message__body">
+                {message.content ||
+                  (streaming && message.id === displayMessages.at(-1)?.id
+                    ? message.toolCalls && message.toolCalls.length > 0
+                      ? '正在调用工具…'
+                      : '正在思考…'
+                    : '')}
+              </div>
+              {message.role === 'user' && messages.some((item) => item.id === message.id) ? (
+                <div className="message__actions">
+                  <Tooltip title="回到这里编辑">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<EditOutlined />}
+                      disabled={streaming}
+                      aria-label="回到这里编辑"
+                      onClick={() => handleRollback(message, index)}
+                    />
+                  </Tooltip>
+                </div>
+              ) : null}
+              {message.toolCalls && message.toolCalls.length > 0 ? (
+                <div className="message__tools">
+                  <Collapse
+                    ghost
                     size="small"
-                    icon={<EditOutlined />}
-                    disabled={streaming}
-                    aria-label="回到这里编辑"
-                    onClick={() => handleRollback(message, index)}
+                    bordered={false}
+                    expandIconPlacement="end"
+                    className="message__tools-collapse"
+                    items={message.toolCalls.map((call, index) => ({
+                      key: call.id || `${message.id}:${index}`,
+                      label: (
+                        <span className="message__tool-header">
+                          <span className="message__tool-name">{call.name}</span>
+                          <span className="message__tool-summary">
+                            {getToolCallSummary(call)}
+                          </span>
+                        </span>
+                      ),
+                      children: (
+                        <div className="message__tool-detail">
+                          <div className="message__tool-section-title">参数填充</div>
+                          <ToolCallArguments args={call.arguments} />
+                          {call.result !== undefined ? (
+                            <>
+                              <div className="message__tool-section-title">
+                                工具结果
+                              </div>
+                              <ToolCallResult result={call.result} />
+                            </>
+                          ) : null}
+                        </div>
+                      ),
+                    }))}
                   />
-                </Tooltip>
-              </div>
-            ) : null}
-            {message.toolCalls && message.toolCalls.length > 0 ? (
-              <div className="message__tools">
-                {message.toolCalls.map((call, index) => {
-                  const result = call.result as
-                    | {
-                        task_id?: string;
-                        status?: string;
-                        error?: string;
-                      }
-                    | undefined;
-                  const summary = result?.task_id
-                    ? `任务 ${result.task_id.slice(0, 8)}${
-                        result.status ? ` · ${result.status}` : ''
-                      }`
-                    : result?.error
-                      ? result.error
-                      : JSON.stringify(result ?? call.arguments ?? {});
-                  return (
-                    <div
-                      key={call.id ?? index}
-                      className="message__tool"
-                      title={JSON.stringify({
-                        name: call.name,
-                        arguments: call.arguments,
-                        result: call.result,
-                      })}
-                    >
-                      <span className="message__tool-name">{call.name}</span>
-                      <span className="message__tool-summary">{summary}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-            {message.files && message.files.length > 0 ? (
-              <div className="message__files">
-                {message.files.map((file) => (
-                  <span key={file.id} className="message__file" title={file.path}>
-                    {file.name}
-                  </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ))}
-        <div ref={endRef} />
-      </div>
+                </div>
+              ) : null}
+              {message.files && message.files.length > 0 ? (
+                <div className="message__files">
+                  {message.files.map((file) => (
+                    <span key={file.id} className="message__file" title={file.path}>
+                      {file.name}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+      </Spin>
 
       <div className="agent-chat__quick">
         {QUICK_PROMPTS.map((prompt) => (
@@ -708,7 +812,7 @@ export function AgentChat({
             key={prompt}
             size="small"
             type="dashed"
-            disabled={streaming}
+            disabled={streaming || conversationLoading}
             onClick={() => handleSend(prompt)}
           >
             {prompt}

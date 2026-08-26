@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
@@ -42,7 +43,7 @@ def collect_params(state: AudioState) -> dict[str, Any]:
     return {"params": params}
 
 
-def probe_validate(state: AudioState) -> dict[str, Any]:
+def probe_validate(state: AudioState, subtype: str | None = None) -> dict[str, Any]:
     settings = load_settings()
     params = state["params"]
     input_path = resolve_project_path(params.get("inputFile"))
@@ -51,6 +52,12 @@ def probe_validate(state: AudioState) -> dict[str, Any]:
 
     binaries = resolve_binaries(settings)
     probe = probe_audio(str(input_path), binaries["ffprobe"])
+    if subtype == "extract" and not any(
+        stream.get("codec_type") == "video"
+        and not (stream.get("disposition") or {}).get("attached_pic", 0)
+        for stream in probe.get("streams", [])
+    ):
+        raise RuntimeError("不支持使用音频文件作为输入")
     output_path = resolve_output_path(params, state["task_id"], settings)
     audio_stream = next(
         (
@@ -155,7 +162,7 @@ def build_audio_graph(
     """Build one complete audio subtype graph with the shared node pipeline."""
     builder = StateGraph(AudioState)
     builder.add_node("collect_params", collect_params)
-    builder.add_node("probe_validate", probe_validate)
+    builder.add_node("probe_validate", partial(probe_validate, subtype=subtype))
     builder.add_node(
         "execute",
         make_execute_node(

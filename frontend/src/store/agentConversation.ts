@@ -22,6 +22,8 @@ interface AgentConversationState {
   streaming: boolean;
   /** 当前正在流式输出的 assistant 消息 ID；历史同步据此跳过半成品快照 */
   streamingMessageId: string | null;
+  /** 切换会话时正在从后端加载历史消息 */
+  conversationLoading: boolean;
   /** 每个会话最近一次附加的输入文件（会话独立，不参与任务缓存） */
   files: Record<string, ConversationFile | null>;
   /** Agent 对话框内选择的模型；空字符串表示使用设置中的默认模型 */
@@ -34,6 +36,7 @@ interface AgentConversationState {
   updateMessage: (id: string, patch: Partial<ChatMessage>) => void;
   setStreaming: (streaming: boolean) => void;
   setStreamingMessageId: (messageId: string | null) => void;
+  setConversationLoading: (loading: boolean) => void;
   /** 保存某个会话的输入文件；conversationId 为空时暂存，待会话创建后绑定 */
   setConversationFile: (
     conversationId: string | null,
@@ -53,6 +56,7 @@ export const useAgentConversationStore = create<AgentConversationState>()(
       messages: [],
       streaming: false,
       streamingMessageId: null,
+      conversationLoading: false,
       files: {},
       model: '',
       reasoning: 'high',
@@ -68,6 +72,8 @@ export const useAgentConversationStore = create<AgentConversationState>()(
         })),
       setStreaming: (streaming) => set({ streaming }),
       setStreamingMessageId: (streamingMessageId) => set({ streamingMessageId }),
+      setConversationLoading: (conversationLoading) =>
+        set({ conversationLoading }),
       setConversationFile: (conversationId, file) =>
         set((state) => {
           const key = conversationId ?? PENDING_FILE_KEY;
@@ -104,6 +110,7 @@ export const useAgentConversationStore = create<AgentConversationState>()(
             messages: [],
             streaming: false,
             streamingMessageId: null,
+            conversationLoading: false,
             files,
           };
         }),
