@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request, send_file
@@ -22,9 +23,14 @@ from .config import (
     resolve_project_path,
     save_settings,
 )
-from .ffmpeg.setup import ensure_bundled_source
+from .ffmpeg.setup import ensure_bundled_runtime
 from .schemas import SCHEMAS
-from .secrets import normalize_saved_api_key, public_settings, resolve_api_key
+from .secrets import (
+    normalize_saved_api_key,
+    public_settings,
+    resolve_api_key,
+    resolve_saved_api_key,
+)
 from .tasks import TERMINAL_STATUSES, task_manager
 from .tools.ffmpeg import get_ffmpeg_info, probe_audio_details
 from .tools.files import browse_local_files
@@ -56,11 +62,14 @@ def create_app() -> Flask:
 
     @app.get("/api/settings")
     def get_settings():
+        settings = load_settings()
+        ffmpeg = get_ffmpeg_info(settings)
         return jsonify(
             {
-                "settings": public_settings(load_settings()),
+                "settings": public_settings(settings),
                 "config_dir": str(CONFIG_DIR),
                 "settings_path": str(get_settings_path()),
+                "ffmpeg": ffmpeg,
             }
         )
 
@@ -68,9 +77,6 @@ def create_app() -> Flask:
     def post_settings():
         payload = request.get_json(silent=True) or {}
         payload = dict(payload)
-        mode = payload.get("ffmpeg", {}).get("mode")
-        if mode is not None and mode not in {"bundled", "system", "custom"}:
-            return jsonify({"error": f"未知的 ffmpeg 模式：{mode}"}), 400
 
         existing = load_settings()
         if isinstance(payload.get("agent"), dict):
@@ -83,11 +89,44 @@ def create_app() -> Flask:
             payload["agent"] = agent_patch
 
         saved = save_settings(payload)
+        ffmpeg = get_ffmpeg_info(saved)
         return jsonify(
             {
                 "settings": public_settings(saved),
                 "settings_path": str(get_settings_path()),
-                "ffmpeg": get_ffmpeg_info(saved),
+                "ffmpeg": ffmpeg,
+            }
+        )
+
+    @app.post("/api/settings/ffmpeg/executable-path")
+    def post_ffmpeg_executable_path():
+        payload = request.get_json(silent=True) or {}
+        raw_path = str(payload.get("executable_path") or "").strip()
+
+        executable_path = ""
+        if raw_path:
+            candidate_path = Path(raw_path).expanduser()
+            if not candidate_path.is_absolute():
+                return jsonify({"error": "ffmpeg 路径必须是绝对路径"}), 400
+            if not candidate_path.is_file():
+                return jsonify({"error": f"ffmpeg 文件不存在：{candidate_path}"}), 400
+            executable_path = str(candidate_path.resolve())
+
+            candidate_settings = deep_merge(
+                load_settings(),
+                {"ffmpeg": {"executable_path": executable_path}},
+            )
+            ffmpeg_info = get_ffmpeg_info(candidate_settings)
+            if not ffmpeg_info["ok"]:
+                return jsonify({"error": ffmpeg_info.get("error")}), 400
+
+        saved = save_settings({"ffmpeg": {"executable_path": executable_path}})
+        ffmpeg = get_ffmpeg_info(saved)
+        return jsonify(
+            {
+                "settings": public_settings(saved),
+                "settings_path": str(get_settings_path()),
+                "ffmpeg": ffmpeg,
             }
         )
 
@@ -149,9 +188,14 @@ def create_app() -> Flask:
         )
 
         def generate():
+            meta_payload = {
+                "conversation_id": conversation_id,
+                "user_message_id": user_message["id"],
+            }
             yield (
                 "event: agent.meta\n"
-                f"data: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                "data: "
+                f"{json.dumps(meta_payload, ensure_ascii=False)}\n\n"
             )
             event_queue: queue.Queue[tuple[str, Any] | None] = queue.Queue()
 
@@ -189,10 +233,15 @@ def create_app() -> Flask:
                         f"data: {json.dumps({'error': data}, ensure_ascii=False)}\n\n"
                     )
                     break
-                if event == "delta":
+                if event == "message_start":
+                    yield (
+                        "event: chat.message_start\n"
+                        f"data: {json.dumps({'message': data}, ensure_ascii=False)}\n\n"
+                    )
+                elif event == "delta":
                     yield (
                         "event: chat.delta\n"
-                        f"data: {json.dumps({'text': data}, ensure_ascii=False)}\n\n"
+                        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                     )
                 elif event == "tool_call":
                     yield (
@@ -213,6 +262,23 @@ def create_app() -> Flask:
             return jsonify({"error": f"会话不存在：{conversation_id}"}), 404
         return jsonify({"messages": db.list_agent_messages(conversation_id)})
 
+    @app.post("/api/agents/conversations/<conversation_id>/rollback")
+    def rollback_agent_conversation(conversation_id: str):
+        if not db.get_agent_conversation(conversation_id):
+            return jsonify({"error": f"会话不存在：{conversation_id}"}), 404
+        payload = request.get_json(silent=True) or {}
+        message_id = str(payload.get("message_id") or "").strip()
+        if not message_id:
+            return jsonify({"error": "缺少 message_id"}), 400
+        try:
+            rollback = db.rollback_agent_conversation(conversation_id, message_id)
+            task_manager.discard_tasks_for_rollback(rollback["deleted_task_ids"])
+        except KeyError:
+            return jsonify({"error": f"消息不存在：{message_id}"}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(rollback)
+
     @app.get("/api/agents/conversations")
     def list_agent_conversations():
         return jsonify({"conversations": db.list_agent_conversations()})
@@ -224,29 +290,74 @@ def create_app() -> Flask:
         db.delete_agent_conversation(conversation_id)
         return jsonify({"ok": True})
 
+    @app.get("/api/agents/access")
+    def agent_access():
+        settings = load_settings()
+        has_saved_api_key = bool(resolve_saved_api_key(settings))
+        conversations = db.list_agent_conversations()
+        has_conversations = len(conversations) > 0
+        allowed = has_saved_api_key or has_conversations
+        if has_saved_api_key:
+            reason = "api_key"
+        elif has_conversations:
+            reason = "history"
+        else:
+            reason = "blocked"
+        return jsonify(
+            {
+                "allowed": allowed,
+                "reason": reason,
+                "has_saved_api_key": has_saved_api_key,
+                "has_conversations": has_conversations,
+                "conversation_count": len(conversations),
+            }
+        )
+
     @app.get("/api/agents/models")
     def agent_models():
         settings = load_settings()
+        agent = settings.get("agent") or {}
         if not resolve_api_key(settings):
-            return (
-                jsonify(
-                    {
-                        "error": "尚未配置 Agent API Key，请先在设置页的 Agent 配置中填写"
-                    }
-                ),
-                400,
+            return jsonify(
+                {
+                    "models": agent.get("models") or [],
+                    "base_url": agent.get("base_url"),
+                    "default_model": "",
+                }
+            )
+        if not str(agent.get("base_url") or "").strip():
+            return jsonify(
+                {
+                    "models": agent.get("models") or [],
+                    "base_url": "",
+                    "default_model": "",
+                }
             )
         try:
             models = list_models(settings)
+            default_model = str(agent.get("model") or "").strip()
+            if not default_model and models:
+                default_model = str(models[0].get("id") or "").strip()
+            agent_update: dict[str, Any] = {"models": models}
+            if default_model:
+                agent_update["model"] = default_model
+            save_settings({"agent": agent_update})
             return jsonify(
                 {
                     "models": models,
-                    "base_url": (settings.get("agent") or {}).get("base_url"),
-                    "default_model": (settings.get("agent") or {}).get("model"),
+                    "base_url": agent.get("base_url"),
+                    "default_model": default_model,
                 }
             )
         except Exception as exc:  # noqa: BLE001 - 前端需要可读错误
-            return jsonify({"error": f"获取模型列表失败：{exc}"}), 400
+            return jsonify(
+                {
+                    "models": agent.get("models") or [],
+                    "base_url": agent.get("base_url"),
+                    "default_model": agent.get("model"),
+                    "error": f"获取模型列表失败：{exc}",
+                }
+            )
 
     @app.post("/api/agents/test")
     def agent_test():
@@ -478,22 +589,17 @@ def create_app() -> Flask:
             )
             return
 
-        if settings["ffmpeg"].get("mode") == "bundled":
-            result = ensure_bundled_source(
-                settings,
-                auto_download=settings["ffmpeg"].get("auto_download_source", True),
-            )
-            if result["ok"]:
-                app.logger.warning(
-                    "ffmpeg 二进制尚未就绪，源码已就绪：%s。"
-                    "请执行 backend/vendor/ffmpeg/build-ffmpeg.sh 后重启，"
-                    "或在设置页切换 ffmpeg 来源。",
-                    result["source"],
-                )
-            else:
-                app.logger.warning("ffmpeg 不可用：%s", result.get("error"))
-        else:
+        if str(settings.get("ffmpeg", {}).get("executable_path") or "").strip():
             app.logger.warning("ffmpeg 不可用：%s", info.get("error"))
+            return
+
+        result = ensure_bundled_runtime(settings)
+        if result["ok"]:
+            app.logger.info("内置 ffmpeg 已就绪：%s", result.get("ffmpeg"))
+        else:
+            if result.get("output_tail"):
+                app.logger.warning("ffmpeg 构建输出末尾：\n%s", result["output_tail"])
+            app.logger.warning("ffmpeg 不可用：%s", result.get("error"))
 
     run_ffmpeg_startup_check()
 

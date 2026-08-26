@@ -173,6 +173,7 @@
 }
 
 .message {
+  position: relative;
   max-width: 82%;
   padding: 10px 14px;
   white-space: pre-wrap;
@@ -187,6 +188,7 @@
 
 .message--user {
   align-self: flex-end;
+  padding-right: 38px;
   color: #fff;
   background: #1677ff;
 }
@@ -197,6 +199,32 @@
   color: #ad6800;
   background: #fffbe6;
   border: 1px solid #ffe58f;
+}
+
+.message__body {
+  min-width: 0;
+}
+
+.message__actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.message:hover .message__actions,
+.message__actions:focus-within {
+  opacity: 1;
+}
+
+.message--user .message__actions .ant-btn {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.message--user .message__actions .ant-btn:not(:disabled):hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .agent-chat__quick {

@@ -51,23 +51,35 @@ def mask_secret(value: str) -> str:
     return f"{value[:3]}****{value[-4:]}"
 
 
+def resolve_saved_api_key(settings: dict[str, Any]) -> str:
+    """Return the API key persisted in project settings, ignoring .env."""
+    agent = settings.get("agent") or {}
+    stored = str(agent.get("api_key") or "").strip()
+    if not stored:
+        return ""
+    decrypted = decrypt_secret(stored)
+    if decrypted:
+        return decrypted.strip()
+    if stored.startswith("sk-") and "****" not in stored:
+        # 允许手工写入 settings.json 的明文 Key（开发期兜底）
+        return stored.strip()
+    return ""
+
+
 def resolve_api_key(settings: dict[str, Any]) -> str:
     """Resolve the effective Agent API key.
 
-    Priority: settings (encrypted at rest, plaintext fallback for manual config)
-    -> DEEPSEEK_API_KEY / LLM_API_KEY from environment or .env.
+    Priority: project settings (encrypted at rest, plaintext fallback for manual
+    config) -> development environment variables.
     """
     agent = settings.get("agent") or {}
-    stored = str(agent.get("api_key") or "").strip()
-    if stored:
-        decrypted = decrypt_secret(stored)
-        if decrypted:
-            return decrypted.strip()
-        if stored.startswith("sk-") and "****" not in stored:
-            # 允许手工写入 settings.json 的明文 Key（开发期兜底）
-            return stored.strip()
+    saved = resolve_saved_api_key(settings)
+    if saved:
+        return saved
 
-    provider = str(agent.get("provider") or "deepseek").lower()
+    provider = str(agent.get("provider") or "").lower()
+    if not provider:
+        return ""
     if provider == "deepseek":
         env_key = os.environ.get("DEEPSEEK_API_KEY")
     else:
@@ -104,13 +116,13 @@ def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Return settings safe for the browser: API key is masked, never raw."""
     result = copy.deepcopy(settings)
     agent = result.setdefault("agent", {})
-    stored = str(agent.get("api_key") or "").strip()
-    raw = resolve_api_key(settings)
-    agent["api_key"] = mask_secret(raw)
-    agent["api_key_configured"] = bool(raw)
-    if raw and stored:
+    stored_raw = resolve_saved_api_key(settings)
+    effective_raw = resolve_api_key(settings)
+    agent["api_key"] = mask_secret(stored_raw)
+    agent["api_key_configured"] = bool(effective_raw)
+    if stored_raw:
         agent["api_key_source"] = "settings"
-    elif raw:
+    elif effective_raw:
         agent["api_key_source"] = "env"
     else:
         agent["api_key_source"] = "none"

@@ -28,6 +28,24 @@ interface FileAttachmentsContextValue {
 
 const FileAttachmentsContext = createContext<FileAttachmentsContextValue | null>(null);
 
+function sameLocalPaths(
+  current: FileAttachment[],
+  next: Array<{ name: string; path: string; size?: number; source?: 'manual' | 'agent' }>,
+) {
+  return (
+    current.length === next.length &&
+    current.every((item, index) => {
+      const candidate = next[index];
+      return (
+        item.name === candidate.name &&
+        item.path === candidate.path &&
+        item.size === (candidate.size ?? 0) &&
+        item.source === candidate.source
+      );
+    })
+  );
+}
+
 export function FileAttachmentsProvider({ children }: { children: ReactNode }) {
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
 
@@ -63,15 +81,18 @@ export function FileAttachmentsProvider({ children }: { children: ReactNode }) {
         source?: 'manual' | 'agent';
       }>,
     ) => {
-      setAttachments(
-        paths.map((item) => ({
+      setAttachments((prev) => {
+        if (sameLocalPaths(prev, paths)) {
+          return prev;
+        }
+        return paths.map((item) => ({
           id: crypto.randomUUID(),
           name: item.name,
           size: item.size ?? 0,
           path: item.path,
           source: item.source,
-        })),
-      );
+        }));
+      });
     },
     [],
   );

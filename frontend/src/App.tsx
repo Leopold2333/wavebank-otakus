@@ -1,11 +1,14 @@
 import { lazy } from 'react';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from './layout/AppLayout';
 import { FileAttachmentsProvider } from './features/files/FileAttachmentsContext';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 
+const AgentAccessGate = lazy(() =>
+  import('./pages/AgentAccessGate').then((module) => ({ default: module.AgentAccessGate })),
+);
 const PlaceholderPage = lazy(() =>
   import('./pages/PlaceholderPage').then((module) => ({ default: module.PlaceholderPage })),
 );
@@ -32,15 +35,30 @@ export default function App() {
           <BrowserRouter>
             <Routes>
               <Route element={<AppLayout />}>
-                <Route index element={<WorkbenchPage />} />
-                <Route path="chat/:conversationId" element={<WorkbenchPage />} />
+                <Route index element={<Navigate to="/chat" replace />} />
+                <Route
+                  path="chat"
+                  element={
+                    <AgentAccessGate>
+                      <WorkbenchPage />
+                    </AgentAccessGate>
+                  }
+                />
+                <Route
+                  path="chat/:conversationId"
+                  element={
+                    <AgentAccessGate>
+                      <WorkbenchPage />
+                    </AgentAccessGate>
+                  }
+                />
                 <Route path="audio/*" element={<WorkbenchPage />} />
                 <Route path="batch" element={<WorkbenchPage />} />
                 <Route path="separation" element={<WorkbenchPage />} />
                 <Route path="denoise" element={<WorkbenchPage />} />
                 <Route path="creative" element={<WorkbenchPage />} />
                 <Route path="usb" element={<WorkbenchPage />} />
-                <Route path="tasks" element={<TaskCenterPage />} />
+                <Route path="tasks/*" element={<TaskCenterPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 <Route
                   path="*"

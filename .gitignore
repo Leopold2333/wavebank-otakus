@@ -223,6 +223,7 @@ node_modules/
 # workspace
 .vscode/
 .agent/
+.agents/
 .codex/
 plan.md
 
@@ -239,8 +240,6 @@ logs/
 # ffmpeg build artifacts
 ffmpeg*.tar.xz
 backend/vendor/ffmpeg/ffmpeg-*/
-backend/vendor/ffmpeg/bin/
-backend/vendor/ffmpeg/build/
 backend/vendor/ffmpeg/*.tar.xz
 backend/vendor/ffmpeg/ffmpeg-9.0.1/config.mak
 backend/vendor/ffmpeg/ffmpeg-9.0.1/ffbuild/config.mak

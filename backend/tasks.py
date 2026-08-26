@@ -12,11 +12,15 @@ from typing import Any
 from . import db
 from .config import load_settings, resolve_project_path
 from .tools.ffmpeg import resolve_output_path
-from .workflows.audio import compile_audio_router_graph
+from .workflows.audio import (
+    PIPELINE_TASK_TYPE,
+    compile_audio_pipeline_graph,
+    compile_audio_router_graph,
+    normalize_pipeline_steps,
+)
 
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
-
 TASK_ID_NAMESPACE = uuid.UUID("a30f6e3e-8d5b-4b21-9d4a-2f7c0e9b6d11")
 
 INPUT_PARAM_KEYS = {"inputFile", "audioTrack", "inputFiles"}
@@ -87,7 +91,7 @@ def _classify_audio_params(
         "processing": processing,
         "runtime": {
             "ffmpeg": {
-                "mode": ffmpeg_settings.get("mode"),
+                "executable_path": ffmpeg_settings.get("executable_path"),
                 "timeout_seconds": ffmpeg_settings.get("timeout_seconds", 3600),
             },
             "tasks": {"max_workers": task_settings.get("max_workers", 2)},
@@ -145,6 +149,9 @@ class TaskManager:
         params = dict(params)
         params.setdefault("task_type", task_type)
         input_file = str(params.get("inputFile", ""))
+        pipeline_steps = None
+        if task_type == PIPELINE_TASK_TYPE:
+            pipeline_steps = normalize_pipeline_steps(params)
         mode = str(mode or "new").lower()
         if mode not in {"new", "rebuild"}:
             raise ValueError(f"未知的任务创建意图：{mode}")
@@ -210,6 +217,12 @@ class TaskManager:
 
         input_params, output_params, config = _classify_audio_params(params, settings)
         config.setdefault("runtime", {})["task_seed"] = {"timestamp": seed_ts, "mode": mode}
+        if pipeline_steps is not None:
+            config["workflow"] = {
+                "engine": "langgraph",
+                "graph": PIPELINE_TASK_TYPE,
+                "steps": pipeline_steps,
+            }
         with self._lock:
             existing = self._tasks.get(used_id) or db.get_task(used_id)
             if existing and existing["status"] not in TERMINAL_STATUSES:
@@ -259,14 +272,26 @@ class TaskManager:
         db.update_task(task_id, status="running", updated_at=_now())
 
         try:
-            graph = compile_audio_router_graph(
-                on_log=lambda line: self.append_log(task_id, line),
-                on_progress=lambda percent: self.update_progress(task_id, percent),
-                process_holder=process_holder,
-            )
-            state = graph.invoke({"task_id": task_id, "params": params})
+            if params.get("task_type") == PIPELINE_TASK_TYPE:
+                graph = compile_audio_pipeline_graph(
+                    on_log=lambda line: self.append_log(task_id, line),
+                    on_progress=lambda percent: self.update_progress(task_id, percent),
+                    process_holder=process_holder,
+                    is_cancelled=lambda: self._tasks.get(task_id, {}).get("status")
+                    == "cancelling",
+                )
+                state = graph.invoke({"task_id": task_id, "params": params})
+            else:
+                graph = compile_audio_router_graph(
+                    on_log=lambda line: self.append_log(task_id, line),
+                    on_progress=lambda percent: self.update_progress(task_id, percent),
+                    process_holder=process_holder,
+                )
+                state = graph.invoke({"task_id": task_id, "params": params})
             with self._lock:
-                task = self._tasks[task_id]
+                task = self._tasks.get(task_id)
+                if not task:
+                    return
                 task.update(
                     status="completed",
                     progress=100.0,
@@ -288,7 +313,9 @@ class TaskManager:
                 )
         except Exception as exc:  # noqa: BLE001 - 失败信息要写入任务记录
             with self._lock:
-                task = self._tasks[task_id]
+                task = self._tasks.get(task_id)
+                if not task:
+                    return
                 if task.get("status") == "cancelling":
                     task.update(status="cancelled", error="任务已取消", updated_at=_now())
                 else:
@@ -405,6 +432,29 @@ class TaskManager:
             self._tasks.pop(task_id, None)
             self._processes.pop(task_id, None)
             db.delete_task(task_id)
+
+    def discard_tasks_for_rollback(self, task_ids: list[str]) -> None:
+        """Remove task records created by a rolled-back conversation branch."""
+        with self._lock:
+            for task_id in sorted(set(task_ids)):
+                try:
+                    uuid.UUID(task_id)
+                except ValueError:
+                    continue
+
+                for process in self._processes.get(task_id, []):
+                    if process and process.poll() is None:
+                        process.terminate()
+
+                task = self._tasks.pop(task_id, None) or db.get_task(task_id)
+                self._processes.pop(task_id, None)
+                if task:
+                    task_dir = task.get("tmp_dir")
+                    if task_dir:
+                        path = Path(task_dir)
+                        if path.is_dir() and path.name == task_id:
+                            shutil.rmtree(path, ignore_errors=True)
+                db.delete_task(task_id)
 
 
 task_manager = TaskManager()

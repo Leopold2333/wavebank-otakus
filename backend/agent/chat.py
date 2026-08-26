@@ -44,7 +44,7 @@ def _persist_turn_messages(
                     }
                 )
             row = {
-                "id": str(uuid.uuid4()),
+                "id": str(getattr(message, "id", None) or uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "role": "assistant",
                 "content": str(message.content or ""),
@@ -68,8 +68,7 @@ def run_agent_turn(
 ) -> dict[str, Any]:
     """Run one ReAct turn inside LangGraph and persist all produced messages.
 
-    ``emit`` receives ``("delta", text)`` and ``("tool_call", payload)`` events
-    which the SSE layer forwards to the browser.
+    ``emit`` receives model-message events which the SSE layer forwards to the browser.
     """
     messages = build_initial_messages(context, history)
     graph = compile_agent_graph(

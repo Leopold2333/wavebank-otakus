@@ -32,6 +32,7 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 BACKEND_HOST = os.environ.get("WAVEBANK_HOST", "127.0.0.1")
 BACKEND_PORT = int(os.environ.get("WAVEBANK_PORT", "5000"))
 FRONTEND_PORT = int(os.environ.get("WAVEBANK_FRONTEND_PORT", "5173"))
+BACKEND_READY_TIMEOUT = float(os.environ.get("WAVEBANK_BACKEND_READY_TIMEOUT", "1800"))
 
 BACKEND_URL = f"http://{BACKEND_HOST}:{BACKEND_PORT}"
 FRONTEND_URL = f"http://localhost:{FRONTEND_PORT}"
@@ -58,32 +59,31 @@ def find_system_python() -> str | None:
     return None
 
 
+def find_uv() -> str | None:
+    return shutil.which("uv")
+
+
 def ensure_backend_python() -> str:
+    uv = find_uv()
+    if uv:
+        print("正在同步后端依赖（uv sync --locked）...")
+        subprocess.run([uv, "sync", "--locked"], cwd=str(BACKEND_DIR), check=True)
+        python = venv_python()
+        if not python:
+            print("错误：uv 同步完成后仍未找到 backend/.venv。", file=sys.stderr)
+            raise SystemExit(1)
+        return str(python)
+
     existing = venv_python()
     if existing:
         return str(existing)
 
-    system_python = find_system_python()
-    if not system_python:
+    if not find_system_python():
         print("错误：未找到 Python，且 backend/.venv 不存在。", file=sys.stderr)
         raise SystemExit(1)
 
-    print("正在创建 backend/.venv ...")
-    subprocess.run(
-        [system_python, "-m", "venv", str(BACKEND_DIR / ".venv")],
-        check=True,
-    )
-    python = venv_python()
-    if not python:
-        print("错误：创建虚拟环境后仍未找到 Python。", file=sys.stderr)
-        raise SystemExit(1)
-
-    print("正在安装后端依赖 ...")
-    subprocess.run(
-        [str(python), "-m", "pip", "install", "-r", str(BACKEND_DIR / "requirements.txt")],
-        check=True,
-    )
-    return str(python)
+    print("错误：后端依赖已迁移到 uv.lock，请先安装 uv 或手动创建 backend/.venv。", file=sys.stderr)
+    raise SystemExit(1)
 
 
 def ensure_frontend_dependencies() -> str:
@@ -164,6 +164,25 @@ def wait_for_url(url: str, timeout: float = 30) -> bool:
     return False
 
 
+def wait_for_process_url(
+    process: subprocess.Popen[str],
+    url: str,
+    timeout: float,
+) -> bool:
+    deadline = time.time() + timeout
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    while time.time() < deadline:
+        if process.poll() is not None:
+            return False
+        try:
+            with opener.open(url, timeout=2) as response:
+                if response.status == 200:
+                    return True
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -202,7 +221,12 @@ def main() -> None:
     frontend = start_process(frontend_command, FRONTEND_DIR, "frontend")
 
     try:
-        if not wait_for_url(f"{BACKEND_URL}/api/health"):
+        print("等待后端就绪；首次下载/编译内置 ffmpeg 时可能需要几分钟。")
+        if not wait_for_process_url(
+            backend,
+            f"{BACKEND_URL}/api/health",
+            timeout=BACKEND_READY_TIMEOUT,
+        ):
             print("后端未在预期时间内就绪。", file=sys.stderr)
             raise SystemExit(1)
         print(f"后端已就绪：{BACKEND_URL}")

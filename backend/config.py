@@ -14,6 +14,7 @@ DEFAULTS_PATH = CONFIG_DIR / "defaults.json"
 try:
     from dotenv import load_dotenv
 
+    # .env is a development convenience for local agent work, not user settings.
     load_dotenv(PROJECT_ROOT / ".env")
 except ImportError:  # pragma: no cover - dotenv 缺失时仅跳过 .env 加载
     pass
@@ -59,6 +60,24 @@ def _diff(settings: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _filter_to_schema(settings: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    """Keep only keys present in the default settings schema."""
+    result: dict[str, Any] = {}
+    for key, value in settings.items():
+        if key not in schema:
+            continue
+        default = schema[key]
+        if value is None:
+            result[key] = None
+        elif isinstance(value, dict) and isinstance(default, dict):
+            nested = _filter_to_schema(value, default)
+            if nested:
+                result[key] = nested
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
 def load_settings() -> dict[str, Any]:
     """Effective settings = defaults.json merged with settings.json."""
     settings = load_defaults()
@@ -66,6 +85,7 @@ def load_settings() -> dict[str, Any]:
     if settings_path.exists():
         try:
             user_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            user_settings = _filter_to_schema(user_settings, settings)
             settings = deep_merge(settings, user_settings)
         except (OSError, json.JSONDecodeError) as exc:
             # A broken user config should not prevent the app from starting.
@@ -76,21 +96,22 @@ def load_settings() -> dict[str, Any]:
 def save_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Persist only overrides; keep defaults.json as the source of truth."""
     defaults = load_defaults()
-    overrides = _diff(settings, defaults)
-
-    settings_path = get_settings_path()
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
     existing: dict[str, Any] = {}
+    settings_path = get_settings_path()
     if settings_path.exists():
         try:
             existing = json.loads(settings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             existing = {}
 
-    merged_overrides = deep_merge(existing, overrides)
+    existing = _filter_to_schema(existing, defaults)
+    incoming = _filter_to_schema(settings, defaults)
+    effective = deep_merge(deep_merge(defaults, existing), incoming)
+    overrides = _diff(effective, defaults)
+
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
-        json.dumps(merged_overrides, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(overrides, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     return load_settings()

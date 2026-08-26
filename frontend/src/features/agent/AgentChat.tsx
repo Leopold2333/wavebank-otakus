@@ -1,14 +1,21 @@
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { flushSync } from 'react-dom';
-import { Button, Input, Tag } from 'antd';
-import { FolderOpenOutlined, RobotOutlined, SendOutlined } from '@ant-design/icons';
+import { App, Button, Input, Tag, Tooltip } from 'antd';
+import {
+  EditOutlined,
+  FolderOpenOutlined,
+  RobotOutlined,
+  SendOutlined,
+} from '@ant-design/icons';
 import {
   getAgentModels,
   getAgentConversationMessages,
+  getTask,
+  rollbackAgentConversation,
   streamAgentChat,
   type AgentChatFile,
   type AgentMessage,
   type AgentModelInfo,
+  type TaskRecord,
 } from '../../api/client';
 import { AttachmentList } from '../files/AttachmentList';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
@@ -36,8 +43,13 @@ interface AgentChatProps {
   onConversationActivity?: () => void;
   /** 新会话创建后通知外层（用于把 URL 更新为 /chat/:id） */
   onConversationCreated?: (conversationId: string) => void;
-  /** 流式状态变化通知外层（用于禁用会话切换等） */
-  onStreamingChange?: (streaming: boolean) => void;
+  /** Agent 工具生成输出文件后通知外层预览 */
+  onTaskOutput?: (
+    outputFile: { path: string; ts: number },
+    task?: TaskRecord | null,
+  ) => void;
+  /** 会话回溯后通知外层清理当前分支预览 */
+  onRollback?: () => void;
 }
 
 const QUICK_PROMPTS = [
@@ -82,13 +94,49 @@ function toChatToolCalls(
 }
 
 function fromAgentMessage(item: AgentMessage): ChatMessage {
-  return createMessage(
+  const message = createMessage(
     item.role as ChatMessage['role'],
     item.content,
     undefined,
     item.files,
     toChatToolCalls(item.tool_calls),
   );
+  return {
+    ...message,
+    id: item.id,
+    ts: new Date(item.created_at).getTime() || message.ts,
+  };
+}
+
+type TaskToolResult = {
+  task_id?: string;
+  status?: string;
+  target_path?: string | null;
+  outputs?: Array<{ path?: string }>;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function getTaskToolResult(call: AgentToolCall): TaskToolResult | null {
+  const result = asRecord(call.result);
+  if (!result || typeof result.task_id !== 'string') {
+    return null;
+  }
+  return result as TaskToolResult;
+}
+
+function latestUserFile(messages: ChatMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const file = messages[index].files?.[0];
+    if (messages[index].role === 'user' && file) {
+      return file;
+    }
+  }
+  return null;
 }
 
 const INITIAL_MESSAGES: ChatMessage[] = [
@@ -104,15 +152,22 @@ export function AgentChat({
   onIntentResolved,
   onConversationActivity,
   onConversationCreated,
-  onStreamingChange,
+  onTaskOutput,
+  onRollback,
 }: AgentChatProps) {
+  const { message: appMessage, modal } = App.useApp();
   const { attachments, setLocalPaths, removeAttachment } = useFileAttachments();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [models, setModels] = useState<AgentModelInfo[]>([]);
-  const [defaultModel, setDefaultModel] = useState('deepseek-v4-flash');
+  const [defaultModel, setDefaultModel] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
-  const toolCallsRef = useRef<AgentToolCall[]>([]);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const latestStreamingMessageIdRef = useRef<string | null>(null);
+  const pendingUserMessageIdRef = useRef<string | null>(null);
+  const taskPollersRef = useRef<Record<string, number>>({});
+  const shownTaskOutputsRef = useRef<Set<string>>(new Set());
+  const onTaskOutputRef = useRef(onTaskOutput);
   /** 流式出错后保留本地错误气泡，不再用服务端快照覆盖 */
   const streamErrorRef = useRef(false);
 
@@ -146,6 +201,93 @@ export function AgentChat({
   const clearTaskInput = useTaskCacheStore((state) => state.clearInput);
 
   const displayMessages = messages.length > 0 ? messages : INITIAL_MESSAGES;
+
+  function publishTaskOutput(task: TaskRecord) {
+    const outputPath = task.target_path || task.outputs.at(-1)?.path;
+    if (!outputPath || shownTaskOutputsRef.current.has(task.id)) {
+      return;
+    }
+    shownTaskOutputsRef.current.add(task.id);
+    onTaskOutputRef.current?.({ path: outputPath, ts: Date.now() }, task);
+  }
+
+  function stopTaskPolling(taskId: string) {
+    const timer = taskPollersRef.current[taskId];
+    if (timer) {
+      window.clearInterval(timer);
+      delete taskPollersRef.current[taskId];
+    }
+  }
+
+  async function pollTaskOutput(taskId: string, fallback?: TaskToolResult) {
+    try {
+      const task = await getTask(taskId);
+      if (task.status === 'completed') {
+        publishTaskOutput(task);
+        stopTaskPolling(taskId);
+      } else if (task.status === 'failed' || task.status === 'cancelled') {
+        stopTaskPolling(taskId);
+      }
+    } catch {
+      const outputPath = fallback?.target_path || fallback?.outputs?.at(-1)?.path;
+      if (fallback?.status === 'completed' && outputPath) {
+        shownTaskOutputsRef.current.add(taskId);
+        onTaskOutputRef.current?.({ path: outputPath, ts: Date.now() }, null);
+      }
+      stopTaskPolling(taskId);
+    }
+  }
+
+  function watchTaskOutput(taskId: string, fallback?: TaskToolResult) {
+    if (!taskId || shownTaskOutputsRef.current.has(taskId)) {
+      return;
+    }
+    if (!taskPollersRef.current[taskId]) {
+      taskPollersRef.current[taskId] = window.setInterval(() => {
+        void pollTaskOutput(taskId, fallback);
+      }, 1000);
+    }
+    void pollTaskOutput(taskId, fallback);
+  }
+
+  function watchMessageTaskOutputs(nextMessages: ChatMessage[]) {
+    let latestTaskId = '';
+    let latestResult: TaskToolResult | undefined;
+    for (const nextMessage of nextMessages) {
+      for (const call of nextMessage.toolCalls ?? []) {
+        const result = getTaskToolResult(call);
+        if (result?.task_id) {
+          latestTaskId = result.task_id;
+          latestResult = result;
+        }
+      }
+    }
+    if (latestTaskId) {
+      watchTaskOutput(latestTaskId, latestResult);
+    }
+  }
+
+  function resetTaskOutputWatchers() {
+    Object.values(taskPollersRef.current).forEach(window.clearInterval);
+    taskPollersRef.current = {};
+    shownTaskOutputsRef.current = new Set();
+  }
+
+  useEffect(() => {
+    onTaskOutputRef.current = onTaskOutput;
+  }, [onTaskOutput]);
+
+  useEffect(() => {
+    resetTaskOutputWatchers();
+  }, [conversationId]);
+
+  useEffect(
+    () => () => {
+      Object.values(taskPollersRef.current).forEach(window.clearInterval);
+      taskPollersRef.current = {};
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -202,30 +344,9 @@ export function AgentChat({
           // 请求期间流式输出已开始，放弃这次可能过期的快照
           return;
         }
-        // 把“仅含工具调用、无文本”的 assistant 步骤合并到随后的回复中，
-        // 避免历史展示时一个回合裂成多条消息。
-        const merged: AgentMessage[] = [];
-        for (const item of serverMessages) {
-          if (item.role !== 'user' && item.role !== 'assistant') {
-            continue;
-          }
-          const last = merged[merged.length - 1];
-          if (
-            item.role === 'assistant' &&
-            last &&
-            last.role === 'assistant' &&
-            !last.content
-          ) {
-            last.content = item.content;
-            last.tool_calls = [
-              ...(last.tool_calls ?? []),
-              ...(item.tool_calls ?? []),
-            ];
-          } else {
-            merged.push({ ...item });
-          }
-        }
-        const restored = merged.map((item) => fromAgentMessage(item));
+        const restored = serverMessages
+          .filter((item) => item.role === 'user' || item.role === 'assistant')
+          .map((item) => fromAgentMessage(item));
         // 服务端有消息时以后端为准；服务端为空时保留本地乐观消息，
         // 避免覆盖刚发出的尚未落库的消息。
         if (
@@ -234,6 +355,16 @@ export function AgentChat({
         ) {
           setMessages(restored);
         }
+        const file = latestUserFile(restored);
+        if (file) {
+          setConversationFile(conversationId, {
+            name: file.name,
+            path: file.path,
+            size: file.size,
+          });
+          setLocalPaths([{ ...file, source: 'agent' }]);
+        }
+        watchMessageTaskOutputs(restored);
       } catch (error) {
         if (!cancelled && (error as { status?: number }).status === 404) {
           resetConversation();
@@ -243,7 +374,13 @@ export function AgentChat({
     return () => {
       cancelled = true;
     };
-  }, [conversationId, resetConversation, setMessages]);
+  }, [
+    conversationId,
+    resetConversation,
+    setConversationFile,
+    setLocalPaths,
+    setMessages,
+  ]);
 
   const handleSend = (raw?: string) => {
     const text = (raw ?? draft).trim();
@@ -258,16 +395,23 @@ export function AgentChat({
     }
 
     const effectiveConversationId = conversationId ?? undefined;
-    appendMessage(createMessage('user', text, undefined, files));
+    const userMessage = createMessage('user', text, undefined, files);
+    pendingUserMessageIdRef.current = userMessage.id;
+    appendMessage(userMessage);
     setDraft('');
     onIntentResolved(resolveIntent(text));
 
-    const assistantId = crypto.randomUUID();
-    toolCallsRef.current = [];
-    appendMessage(createMessage('assistant', ''));
-    setStreamingMessageId(assistantId);
+    latestStreamingMessageIdRef.current = null;
     setStreaming(true);
-    onStreamingChange?.(true);
+
+    const ensureAssistantMessage = (messageId: string) => {
+      const state = useAgentConversationStore.getState();
+      if (!state.messages.some((message) => message.id === messageId)) {
+        appendMessage({ ...createMessage('assistant', ''), id: messageId });
+      }
+      latestStreamingMessageIdRef.current = messageId;
+      setStreamingMessageId(messageId);
+    };
 
     void streamAgentChat(
       {
@@ -282,119 +426,166 @@ export function AgentChat({
         thinking: reasoning !== 'off',
       },
       {
-        onMeta: (newConversationId) => {
+        onMeta: (newConversationId, userMessageId) => {
           if (newConversationId) {
             bindPendingFile(newConversationId);
             setConversation(newConversationId);
             onConversationCreated?.(newConversationId);
             onConversationActivity?.();
           }
+          if (userMessageId && pendingUserMessageIdRef.current) {
+            updateMessage(pendingUserMessageIdRef.current, { id: userMessageId });
+            pendingUserMessageIdRef.current = null;
+          }
         },
-        onDelta: (delta) => {
+        onMessageStart: ({ id }) => {
+          ensureAssistantMessage(id);
+        },
+        onDelta: (messageId, delta) => {
+          ensureAssistantMessage(messageId);
           const state = useAgentConversationStore.getState();
-          const targetId =
-            state.streamingMessageId &&
-            state.messages.some((message) => message.id === state.streamingMessageId)
-              ? state.streamingMessageId
-              : assistantId;
           const current =
-            state.messages.find((message) => message.id === targetId)?.content ?? '';
-          // 多个 SSE chunk 可能在同一轮 microtask 到达；flushSync 保证每个
-          // delta 都立即提交渲染，而不是攒到 chat.done 才一次性显示。
-          flushSync(() => {
-            updateMessage(targetId, { content: current + delta });
-          });
+            state.messages.find((message) => message.id === messageId)?.content ?? '';
+          updateMessage(messageId, { content: current + delta });
         },
         onToolCall: (toolCall) => {
+          const messageId =
+            toolCall.message_id ?? latestStreamingMessageIdRef.current ?? crypto.randomUUID();
+          ensureAssistantMessage(messageId);
           const state = useAgentConversationStore.getState();
-          const targetId =
-            state.streamingMessageId &&
-            state.messages.some((message) => message.id === state.streamingMessageId)
-              ? state.streamingMessageId
-              : assistantId;
-          toolCallsRef.current = [...toolCallsRef.current, toolCall];
-          flushSync(() => {
-            updateMessage(targetId, { toolCalls: toolCallsRef.current });
-          });
+          const currentToolCalls =
+            state.messages.find((message) => message.id === messageId)?.toolCalls ?? [];
+          updateMessage(messageId, { toolCalls: [...currentToolCalls, toolCall] });
+          const result = getTaskToolResult(toolCall);
+          if (result?.task_id) {
+            watchTaskOutput(result.task_id, result);
+          }
         },
         onDone: (finalMessage) => {
+          const finalToolCalls = toChatToolCalls(finalMessage.tool_calls);
+          finalToolCalls?.forEach((call) => {
+            const result = getTaskToolResult(call);
+            if (result?.task_id) {
+              watchTaskOutput(result.task_id, result);
+            }
+          });
+          ensureAssistantMessage(finalMessage.id);
           const state = useAgentConversationStore.getState();
-          const targetId =
-            state.streamingMessageId &&
-            state.messages.some((message) => message.id === state.streamingMessageId)
-              ? state.streamingMessageId
-              : assistantId;
           const current =
-            state.messages.find((message) => message.id === targetId)?.content ?? '';
+            state.messages.find((message) => message.id === finalMessage.id)?.content ?? '';
           const patch: Partial<ChatMessage> = {
             content: finalMessage.content || current,
           };
-          const finalToolCalls =
-            toChatToolCalls(finalMessage.tool_calls) ??
-            (toolCallsRef.current.length > 0 ? toolCallsRef.current : undefined);
           if (finalToolCalls) {
             patch.toolCalls = finalToolCalls;
           }
-          flushSync(() => {
-            if (state.messages.some((message) => message.id === targetId)) {
-              updateMessage(targetId, patch);
-            } else if (
-              !state.messages.some(
-                (message) => message.role === 'assistant' && message.content,
-              )
-            ) {
-              // 本地气泡已被历史快照替换且没有可显示的 assistant 文本时，
-              // 直接用服务端最终消息补一个气泡，避免留下空方块。
-              appendMessage(
-                createMessage(
-                  'assistant',
-                  patch.content ?? '',
-                  undefined,
-                  undefined,
-                  patch.toolCalls,
-                ),
-              );
-            }
-            setStreamingMessageId(null);
-            setStreaming(false);
-            onStreamingChange?.(false);
-            onConversationActivity?.();
-          });
+          if (state.messages.some((message) => message.id === finalMessage.id)) {
+            updateMessage(finalMessage.id, patch);
+          } else if (
+            !state.messages.some(
+              (message) => message.role === 'assistant' && message.content,
+            )
+          ) {
+            // 本地气泡已被历史快照替换且没有可显示的 assistant 文本时，
+            // 直接用服务端最终消息补一个气泡，避免留下空方块。
+            appendMessage(
+              createMessage(
+                'assistant',
+                patch.content ?? '',
+                undefined,
+                undefined,
+                patch.toolCalls,
+              ),
+            );
+          }
+          setStreamingMessageId(null);
+          setStreaming(false);
+          latestStreamingMessageIdRef.current = null;
+          pendingUserMessageIdRef.current = null;
+          onConversationActivity?.();
         },
         onError: (error) => {
-          const state = useAgentConversationStore.getState();
-          const targetId =
-            state.streamingMessageId &&
-            state.messages.some((message) => message.id === state.streamingMessageId)
-              ? state.streamingMessageId
-              : assistantId;
+          const messageId = latestStreamingMessageIdRef.current ?? crypto.randomUUID();
+          ensureAssistantMessage(messageId);
           streamErrorRef.current = true;
-          flushSync(() => {
-            updateMessage(targetId, {
-              content: `⚠️ ${error}`,
-            });
-            setStreamingMessageId(null);
-            setStreaming(false);
-            onStreamingChange?.(false);
+          updateMessage(messageId, {
+            content: `⚠️ ${error}`,
           });
+          setStreamingMessageId(null);
+          setStreaming(false);
+          latestStreamingMessageIdRef.current = null;
+          pendingUserMessageIdRef.current = null;
         },
       },
     ).catch((error: unknown) => {
-      const state = useAgentConversationStore.getState();
-      const targetId =
-        state.streamingMessageId &&
-        state.messages.some((message) => message.id === state.streamingMessageId)
-          ? state.streamingMessageId
-          : assistantId;
+      const messageId = latestStreamingMessageIdRef.current ?? crypto.randomUUID();
+      ensureAssistantMessage(messageId);
       streamErrorRef.current = true;
-      flushSync(() => {
-        updateMessage(targetId, {
-          content: `⚠️ ${error instanceof Error ? error.message : '流式连接中断'}`,
-        });
-        setStreamingMessageId(null);
-        setStreaming(false);
-        onStreamingChange?.(false);
+      updateMessage(messageId, {
+        content: `⚠️ ${error instanceof Error ? error.message : '流式连接中断'}`,
       });
+      setStreamingMessageId(null);
+      setStreaming(false);
+      latestStreamingMessageIdRef.current = null;
+      pendingUserMessageIdRef.current = null;
+    });
+  };
+
+  const focusComposer = () => {
+    window.setTimeout(() => {
+      composerRef.current?.querySelector('textarea')?.focus();
+    }, 0);
+  };
+
+  const applyRollback = async (target: ChatMessage, index: number) => {
+    if (streaming || target.role !== 'user') {
+      return;
+    }
+    try {
+      if (conversationId) {
+        const response = await rollbackAgentConversation(conversationId, target.id);
+        const restored = response.messages
+          .filter((item) => item.role === 'user' || item.role === 'assistant')
+          .map((item) => fromAgentMessage(item));
+        resetTaskOutputWatchers();
+        setMessages(restored);
+        watchMessageTaskOutputs(restored);
+      } else {
+        resetTaskOutputWatchers();
+        setMessages(messages.slice(0, index));
+      }
+      setDraft(target.content);
+      const file = target.files?.[0] ?? null;
+      setLocalPaths(file ? [{ ...file, source: 'agent' }] : []);
+      setConversationFile(
+        conversationId,
+        file
+          ? {
+              name: file.name,
+              path: file.path,
+              size: file.size,
+            }
+          : null,
+      );
+      onRollback?.();
+      onConversationActivity?.();
+      focusComposer();
+    } catch (error) {
+      appMessage.error(error instanceof Error ? error.message : '回溯失败');
+    }
+  };
+
+  const handleRollback = (target: ChatMessage, index: number) => {
+    if (streaming || target.role !== 'user') {
+      return;
+    }
+    modal.confirm({
+      title: '确认回溯到这条问题？',
+      content: '确认后会删除这条问题及其之后的对话，并清理对应的任务记录。',
+      okText: '确认回溯',
+      cancelText: '取消',
+      okType: 'danger',
+      onOk: () => applyRollback(target, index),
     });
   };
 
@@ -439,14 +630,30 @@ export function AgentChat({
       </div>
 
       <div className="agent-chat__messages">
-        {displayMessages.map((message) => (
+        {displayMessages.map((message, index) => (
           <div key={message.id} className={`message message--${message.role}`}>
-            {message.content ||
-              (streaming && message.id === displayMessages.at(-1)?.id
-                ? message.toolCalls && message.toolCalls.length > 0
-                  ? '正在调用工具…'
-                  : '正在思考…'
-                : '')}
+            <div className="message__body">
+              {message.content ||
+                (streaming && message.id === displayMessages.at(-1)?.id
+                  ? message.toolCalls && message.toolCalls.length > 0
+                    ? '正在调用工具…'
+                    : '正在思考…'
+                  : '')}
+            </div>
+            {message.role === 'user' && messages.some((item) => item.id === message.id) ? (
+              <div className="message__actions">
+                <Tooltip title="回到这里编辑">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<EditOutlined />}
+                    disabled={streaming}
+                    aria-label="回到这里编辑"
+                    onClick={() => handleRollback(message, index)}
+                  />
+                </Tooltip>
+              </div>
+            ) : null}
             {message.toolCalls && message.toolCalls.length > 0 ? (
               <div className="message__tools">
                 {message.toolCalls.map((call, index) => {
@@ -515,7 +722,7 @@ export function AgentChat({
         </div>
       ) : null}
 
-      <div className="agent-chat__composer">
+      <div className="agent-chat__composer" ref={composerRef}>
         <Input.TextArea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}

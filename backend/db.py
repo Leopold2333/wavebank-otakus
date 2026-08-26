@@ -436,6 +436,69 @@ def list_agent_messages(conversation_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _collect_task_ids(value: Any) -> set[str]:
+    task_ids: set[str] = set()
+    if isinstance(value, dict):
+        task_id = value.get("task_id")
+        if isinstance(task_id, str) and task_id.strip():
+            task_ids.add(task_id.strip())
+        for item in value.values():
+            task_ids.update(_collect_task_ids(item))
+    elif isinstance(value, list):
+        for item in value:
+            task_ids.update(_collect_task_ids(item))
+    return task_ids
+
+
+def rollback_agent_conversation(
+    conversation_id: str,
+    message_id: str,
+) -> dict[str, Any]:
+    deleted_task_ids: set[str] = set()
+    with _db_lock, closing(_connect()) as connection:
+        with connection:
+            target = connection.execute(
+                """
+                SELECT rowid, role FROM agent_messages
+                WHERE conversation_id=? AND id=?
+                """,
+                (conversation_id, message_id),
+            ).fetchone()
+            if not target:
+                raise KeyError(message_id)
+            if target["role"] != "user":
+                raise ValueError("只能回溯到用户消息")
+            rows_to_delete = connection.execute(
+                """
+                SELECT tool_calls FROM agent_messages
+                WHERE conversation_id=? AND rowid>=?
+                """,
+                (conversation_id, target["rowid"]),
+            ).fetchall()
+            for row in rows_to_delete:
+                try:
+                    deleted_task_ids.update(
+                        _collect_task_ids(json.loads(row["tool_calls"] or "[]"))
+                    )
+                except json.JSONDecodeError:
+                    continue
+            connection.execute(
+                """
+                DELETE FROM agent_messages
+                WHERE conversation_id=? AND rowid>=?
+                """,
+                (conversation_id, target["rowid"]),
+            )
+            connection.execute(
+                "UPDATE agent_conversations SET updated_at=? WHERE id=?",
+                (_agent_now(), conversation_id),
+            )
+    return {
+        "messages": list_agent_messages(conversation_id),
+        "deleted_task_ids": sorted(deleted_task_ids),
+    }
+
+
 def delete_agent_conversation(conversation_id: str) -> None:
     with _db_lock, closing(_connect()) as connection:
         with connection:

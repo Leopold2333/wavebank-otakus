@@ -1,13 +1,6 @@
-export type FfmpegMode = 'bundled' | 'system' | 'custom';
-
 export interface FfmpegSettings {
-  mode: FfmpegMode;
-  bundled_dir: string;
-  custom_ffmpeg_path: string;
-  custom_ffprobe_path: string;
-  fallback_to_system: boolean;
+  executable_path: string;
   timeout_seconds: number;
-  auto_download_source: boolean;
   source_version: string;
   download_url_template: string;
 }
@@ -21,12 +14,13 @@ export interface TaskSettings {
   max_workers: number;
 }
 
-export type AgentProvider = 'deepseek' | 'moonshot' | 'zhipu' | 'qwen' | 'custom';
+export type AgentProvider = '' | 'deepseek' | 'moonshot' | 'zhipu' | 'qwen' | 'custom';
 
 export interface AgentSettings {
   provider: AgentProvider;
   base_url: string;
   model: string;
+  models: AgentModelInfo[];
   reasoning_effort: string;
   thinking: boolean;
   timeout_seconds: number;
@@ -43,12 +37,17 @@ export interface Settings {
   config_warning?: string;
 }
 
+export type SettingsUpdate = Partial<Omit<Settings, 'agent'>> & {
+  agent?: Partial<AgentSettings> | null;
+};
+
 export interface FfmpegCheckResult {
   ok: boolean;
   ffmpeg?: string;
   ffprobe?: string;
+  bundled_ffmpeg?: string;
+  bundled_ffprobe?: string;
   source?: string;
-  mode?: string;
   version?: string;
   error?: string;
 }
@@ -73,8 +72,23 @@ export interface SettingsResponse {
   ffmpeg?: FfmpegCheckResult;
 }
 
+export interface AgentAccessResponse {
+  allowed: boolean;
+  reason: 'api_key' | 'history' | 'blocked';
+  has_saved_api_key: boolean;
+  has_conversations: boolean;
+  conversation_count: number;
+}
+
 export interface AudioTaskParams {
   inputFile: string;
+  steps?: Array<{
+    taskType?: string;
+    task_type?: string;
+    type?: string;
+    subtype?: string;
+    params?: Partial<AudioTaskParams>;
+  }>;
   outputFormat?: string;
   outputFileName?: string;
   volumeGain?: number;
@@ -94,6 +108,8 @@ export interface AudioTaskParams {
 export interface TaskOutput {
   path: string;
   size: number;
+  step?: number;
+  task_type?: string;
 }
 
 export interface TaskRecord {
@@ -216,10 +232,19 @@ export function getSettings(): Promise<SettingsResponse> {
   return request<SettingsResponse>('/settings');
 }
 
-export function saveSettings(settings: Settings): Promise<SettingsResponse> {
+export function saveSettings(settings: Settings | SettingsUpdate): Promise<SettingsResponse> {
   return request<SettingsResponse>('/settings', {
     method: 'POST',
     body: JSON.stringify(settings),
+  });
+}
+
+export function saveFfmpegExecutablePath(
+  executablePath: string,
+): Promise<SettingsResponse> {
+  return request<SettingsResponse>('/settings/ffmpeg/executable-path', {
+    method: 'POST',
+    body: JSON.stringify({ executable_path: executablePath }),
   });
 }
 
@@ -298,9 +323,11 @@ export interface AgentConversationSummary {
 }
 
 export interface AgentChatHandlers {
-  onMeta?: (conversationId: string) => void;
-  onDelta?: (text: string) => void;
+  onMeta?: (conversationId: string, userMessageId?: string) => void;
+  onMessageStart?: (message: { id: string }) => void;
+  onDelta?: (messageId: string, text: string) => void;
   onToolCall?: (toolCall: {
+    message_id?: string;
     id?: string;
     name: string;
     arguments: Record<string, unknown>;
@@ -325,14 +352,18 @@ function dispatchAgentEvent(raw: string, handlers: AgentChatHandlers) {
   }
   let parsed: {
     conversation_id?: string;
+    user_message_id?: string;
+    message_id?: string;
     text?: string;
+    message_start?: { id: string };
+    message?: AgentMessage | { id: string };
     tool_call?: {
+      message_id?: string;
       id?: string;
       name: string;
       arguments: Record<string, unknown>;
       result?: unknown;
     };
-    message?: AgentMessage;
     error?: string;
   };
   try {
@@ -341,15 +372,22 @@ function dispatchAgentEvent(raw: string, handlers: AgentChatHandlers) {
     return;
   }
   if (event === 'agent.meta') {
-    handlers.onMeta?.(parsed.conversation_id ?? '');
+    handlers.onMeta?.(parsed.conversation_id ?? '', parsed.user_message_id);
+  } else if (event === 'chat.message_start') {
+    const message = parsed.message;
+    if (message?.id) {
+      handlers.onMessageStart?.({ id: message.id });
+    }
   } else if (event === 'chat.delta') {
-    handlers.onDelta?.(parsed.text ?? '');
+    if (parsed.message_id) {
+      handlers.onDelta?.(parsed.message_id, parsed.text ?? '');
+    }
   } else if (event === 'chat.tool_call') {
     if (parsed.tool_call) {
       handlers.onToolCall?.(parsed.tool_call);
     }
   } else if (event === 'chat.done') {
-    if (parsed.message) {
+    if (parsed.message && 'conversation_id' in parsed.message) {
       handlers.onDone?.(parsed.message);
     }
   } else if (event === 'chat.error') {
@@ -373,12 +411,29 @@ export function deleteAgentConversation(
   });
 }
 
+export function rollbackAgentConversation(
+  conversationId: string,
+  messageId: string,
+): Promise<{ messages: AgentMessage[]; deleted_task_ids?: string[] }> {
+  return request<{ messages: AgentMessage[]; deleted_task_ids?: string[] }>(
+    `/agents/conversations/${conversationId}/rollback`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ message_id: messageId }),
+    },
+  );
+}
+
 export function getAgentConversations(): Promise<{
   conversations: AgentConversationSummary[];
 }> {
   return request<{ conversations: AgentConversationSummary[] }>(
     '/agents/conversations',
   );
+}
+
+export function getAgentAccess(): Promise<AgentAccessResponse> {
+  return request<AgentAccessResponse>('/agents/access');
 }
 
 export async function streamAgentChat(
@@ -458,6 +513,7 @@ export interface AgentModelsResponse {
   models: AgentModelInfo[];
   base_url?: string;
   default_model?: string;
+  error?: string;
 }
 
 export function getAgentModels(): Promise<AgentModelsResponse> {

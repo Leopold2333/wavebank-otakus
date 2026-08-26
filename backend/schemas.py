@@ -218,8 +218,20 @@ AUDIO_SCHEMA: dict[str, Any] = {
 }
 
 
+AUDIO_PIPELINE_SCHEMA: dict[str, Any] = {
+    "task_type": "audio.pipeline",
+    "intent": "audio",
+    "title": "音频编排",
+    "agent": "media_agent",
+    "description": "按顺序执行多个音频处理步骤，并自动把上一步输出作为下一步输入",
+    "fields": [INPUT_FILE_FIELD],
+    "commonFields": COMMON_OUTPUT_FIELDS,
+}
+
+
 SCHEMAS: dict[str, dict[str, Any]] = {
     "audio": AUDIO_SCHEMA,
+    "audio.pipeline": AUDIO_PIPELINE_SCHEMA,
     **{
         f"audio.{key}": {
             **value,

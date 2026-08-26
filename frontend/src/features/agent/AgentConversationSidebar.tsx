@@ -118,7 +118,7 @@ export function AgentConversationSidebar({
                   active ? ' agent-conversations__item--active' : ''
                 }`}
               >
-                <Tooltip title={conversation.id} placement="right">
+                <Tooltip title={conversation.id} placement="top">
                   <button
                     type="button"
                     className="agent-conversations__item-main"

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { App } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { deleteAgentConversation, getTask } from '../api/client';
+import { deleteAgentConversation, getTask, type TaskRecord } from '../api/client';
 import { AgentChat } from '../features/agent/AgentChat';
 import { AgentConversationSidebar } from '../features/agent/AgentConversationSidebar';
 import { AudioFilePanel } from '../features/audio/AudioFilePanel';
@@ -47,6 +47,10 @@ export function WorkbenchPage() {
   } | null>(null);
   const [agentRefreshKey, setAgentRefreshKey] = useState(0);
   const [chatIntent, setChatIntent] = useState<IntentId | null>(null);
+  const [agentOutputFile, setAgentOutputFile] = useState<{
+    path: string;
+    ts: number;
+  } | null>(null);
   const { attachments, setLocalPaths } = useFileAttachments();
   const inputPath = attachments[0]?.path;
   const conversationId = useAgentConversationStore((state) => state.conversationId);
@@ -62,10 +66,10 @@ export function WorkbenchPage() {
   );
   const restoreTask = useTaskCacheStore((state) => state.restoreTask);
   const updateOutput = useTaskCacheStore((state) => state.updateOutput);
-  const outputFile = cachedOutputFile;
+  const outputFile = activeIntent ? cachedOutputFile : agentOutputFile;
   /** 防止同一轮进入工作台时重复清理附件 */
   const workbenchEnteredRef = useRef(false);
-  /** 最近一次路由键（home / chat:id / intent:xxx），用于 URL 切换时重置会话 */
+  /** 最近一次路由键（chat / chat:id / intent:xxx），用于 URL 切换时重置会话 */
   const lastRouteKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -98,7 +102,7 @@ export function WorkbenchPage() {
     }
   }, [activeIntent, attachments, conversationId, urlConversationId, setLocalPaths]);
 
-  // URL 未携带会话 ID（/）时不路由到任何会话：仅在 URL 路由切换时
+  // URL 未携带会话 ID（/chat）时不路由到任何会话：仅在 URL 路由切换时
   // 重置为空白新会话视图，避免把用户“粘”在旧会话上；同时不会误伤
   // 正在流式输出的新会话（会话 ID 变化不会触发本逻辑）。
   useEffect(() => {
@@ -106,7 +110,7 @@ export function WorkbenchPage() {
       ? `chat:${urlConversationId}`
       : activeIntent
         ? `intent:${activeIntent}`
-        : 'home';
+        : 'chat';
     if (lastRouteKeyRef.current === routeKey) {
       return;
     }
@@ -116,6 +120,7 @@ export function WorkbenchPage() {
       if (state.conversationId || state.messages.length > 0) {
         resetConversation();
         setLocalPaths([]);
+        setAgentOutputFile(null);
       }
     }
   }, [activeIntent, resetConversation, setLocalPaths, urlConversationId]);
@@ -140,6 +145,7 @@ export function WorkbenchPage() {
       return;
     }
     setMessages([]);
+    setAgentOutputFile(null);
     setConversation(urlConversationId);
     const conversationFile =
       useAgentConversationStore.getState().files[urlConversationId] ?? null;
@@ -269,7 +275,7 @@ export function WorkbenchPage() {
       setMediaKind('none');
     }
     navigate(
-      intent === 'audio' ? `/audio/${DEFAULT_AUDIO_SUBTYPE}` : intent ? `/${intent}` : '/',
+      intent === 'audio' ? `/audio/${DEFAULT_AUDIO_SUBTYPE}` : intent ? `/${intent}` : '/chat',
     );
   };
 
@@ -293,6 +299,7 @@ export function WorkbenchPage() {
       return;
     }
     setMessages([]);
+    setAgentOutputFile(null);
     setConversation(selectedConversationId);
     navigate(`/chat/${selectedConversationId}`);
     const conversationFile =
@@ -315,8 +322,9 @@ export function WorkbenchPage() {
     resetConversation();
     setChatIntent(null);
     setLocalPaths([]);
+    setAgentOutputFile(null);
     setAgentRefreshKey((key) => key + 1);
-    navigate('/');
+    navigate('/chat');
   };
 
   const handleDeleteConversation = async (selectedConversationId: string) => {
@@ -326,7 +334,8 @@ export function WorkbenchPage() {
         resetConversation();
         setChatIntent(null);
         setLocalPaths([]);
-        navigate('/');
+        setAgentOutputFile(null);
+        navigate('/chat');
       }
       setConversationFile(selectedConversationId, null);
       setAgentRefreshKey((key) => key + 1);
@@ -335,6 +344,31 @@ export function WorkbenchPage() {
       message.error(error instanceof Error ? error.message : '删除会话失败');
     }
   };
+
+  const handleAgentTaskOutput = useCallback(
+    (nextOutputFile: { path: string; ts: number }, task?: TaskRecord | null) => {
+      setAgentOutputFile(nextOutputFile);
+      const inputFile =
+        (task?.params.inputFile as string | undefined) ??
+        (task?.input_params?.inputFile as string | undefined);
+      if (!inputFile) {
+        return;
+      }
+      const file = {
+        name: pathBasename(inputFile),
+        path: inputFile,
+        size: 0,
+        source: 'agent' as const,
+      };
+      setLocalPaths([file]);
+      setConversationFile(task?.conversation_id ?? conversationId, {
+        name: file.name,
+        path: file.path,
+        size: file.size,
+      });
+    },
+    [conversationId, setConversationFile, setLocalPaths],
+  );
 
   useEffect(() => {
     if (
@@ -381,6 +415,8 @@ export function WorkbenchPage() {
             activeIntent={chatIntent}
             activeSubtype={null}
             onIntentResolved={handleAgentIntentResolved}
+            onTaskOutput={handleAgentTaskOutput}
+            onRollback={() => setAgentOutputFile(null)}
             onConversationActivity={() =>
               setAgentRefreshKey((key) => key + 1)
             }

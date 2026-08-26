@@ -14,6 +14,7 @@ registry and feeds ``ToolMessage`` results back into the conversation state.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated, Any, Callable, TypedDict
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -40,15 +41,20 @@ def compile_agent_graph(
     context: dict[str, Any],
     emit: Callable[[str, Any], None],
 ):
-    """Build the ReAct graph; ``emit`` receives ("delta"|"tool_call", payload)."""
+    """Build the ReAct graph; ``emit`` receives model/message events."""
 
     def call_model(state: AgentState) -> dict[str, Any]:
+        message_id = str(uuid.uuid4())
+        emit("message_start", {"id": message_id})
         messages = _to_openai_messages(state["messages"])
         result = stream_chat_completion(
             settings,
             messages,
             tools=get_tool_schemas(),
-            on_delta=lambda text: emit("delta", text),
+            on_delta=lambda text: emit(
+                "delta",
+                {"message_id": message_id, "text": text},
+            ),
         )
         tool_calls: list[dict[str, Any]] = []
         for raw_call in result["tool_calls"]:
@@ -65,7 +71,13 @@ def compile_agent_graph(
                 }
             )
         return {
-            "messages": [AIMessage(content=result["content"], tool_calls=tool_calls)],
+            "messages": [
+                AIMessage(
+                    id=message_id,
+                    content=result["content"],
+                    tool_calls=tool_calls,
+                )
+            ],
             "rounds": state.get("rounds", 0) + 1,
         }
 
@@ -82,6 +94,7 @@ def compile_agent_graph(
             emit(
                 "tool_call",
                 {
+                    "message_id": getattr(last_message, "id", None),
                     "id": call.get("id"),
                     "name": name,
                     "arguments": arguments,

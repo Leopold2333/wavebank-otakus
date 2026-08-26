@@ -14,6 +14,12 @@ from .convert import compile_convert_graph
 from .denoise import compile_denoise_graph
 from .extract import compile_extract_graph
 from .pitch import compile_pitch_graph
+from .pipeline import (
+    PIPELINE_TASK_TYPE,
+    AudioPipelineState,
+    compile_audio_pipeline_graph,
+    normalize_pipeline_steps,
+)
 from .router import compile_audio_router_graph
 from .trim import compile_trim_graph
 
@@ -48,8 +54,12 @@ def compile_audio_graph(task_type: str = "audio.convert", **kwargs: Any) -> Any:
 
 __all__ = [
     "AUDIO_GRAPH_COMPILERS",
+    "PIPELINE_TASK_TYPE",
+    "AudioPipelineState",
     "AudioState",
     "compile_audio_graph",
+    "compile_audio_pipeline_graph",
     "compile_audio_router_graph",
     "get_audio_graph_compiler",
+    "normalize_pipeline_steps",
 ]

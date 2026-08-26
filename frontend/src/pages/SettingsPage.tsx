@@ -7,33 +7,30 @@ import {
   Form,
   Input,
   InputNumber,
+  Popconfirm,
   Select,
   Space,
   Spin,
-  Switch,
   Tag,
   Typography,
 } from 'antd';
 import {
   checkFfmpeg,
+  getAgentModels,
   getHealth,
   getSettings,
+  saveFfmpegExecutablePath,
   saveSettings,
   testAgentConnection,
   type AgentSettings,
+  type AgentModelInfo,
   type FfmpegCheckResult,
   type HealthResponse,
   type Settings,
 } from '../api/client';
 
-const FFMPEG_MODE_OPTIONS = [
-  { label: '内置 ffmpeg（默认）', value: 'bundled' },
-  { label: '系统 PATH', value: 'system' },
-  { label: '自定义路径', value: 'custom' },
-];
-
 const AGENT_PROVIDER_OPTIONS = [
-  { label: 'DeepSeek（默认）', value: 'deepseek' },
+  { label: 'DeepSeek', value: 'deepseek' },
   { label: 'Kimi / Moonshot', value: 'moonshot' },
   { label: '智谱 GLM', value: 'zhipu' },
   { label: '通义千问', value: 'qwen' },
@@ -41,23 +38,28 @@ const AGENT_PROVIDER_OPTIONS = [
 ];
 
 const AGENT_PROVIDER_PRESETS: Record<
-  NonNullable<AgentSettings['provider']>,
-  { base_url: string; model: string }
+  Exclude<AgentSettings['provider'], ''>,
+  { base_url: string }
 > = {
-  deepseek: { base_url: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
-  moonshot: { base_url: 'https://api.moonshot.cn/v1', model: 'moonshot-v1-8k' },
-  zhipu: { base_url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash' },
+  deepseek: { base_url: 'https://api.deepseek.com' },
+  moonshot: { base_url: 'https://api.moonshot.cn/v1' },
+  zhipu: { base_url: 'https://open.bigmodel.cn/api/paas/v4' },
   qwen: {
     base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
   },
-  custom: { base_url: '', model: '' },
+  custom: { base_url: '' },
 };
 
 function FfmpegStatus({ info }: { info: FfmpegCheckResult | undefined }) {
   if (!info) {
     return null;
   }
+  const bundledPaths = (
+    <>
+      {info.bundled_ffmpeg ? <div>内置 ffmpeg：{info.bundled_ffmpeg}</div> : null}
+      {info.bundled_ffprobe ? <div>内置 ffprobe：{info.bundled_ffprobe}</div> : null}
+    </>
+  );
   if (info.ok) {
     return (
       <Alert
@@ -70,12 +72,25 @@ function FfmpegStatus({ info }: { info: FfmpegCheckResult | undefined }) {
             {info.ffprobe ? <div>ffprobe：{info.ffprobe}</div> : null}
             {info.version ? <div>{info.version}</div> : null}
             <div>来源：{info.source}</div>
+            {bundledPaths}
           </>
         }
       />
     );
   }
-  return <Alert type="error" showIcon title="ffmpeg 不可用" description={info.error} />;
+  return (
+    <Alert
+      type="error"
+      showIcon
+      title="ffmpeg 不可用"
+      description={
+        <>
+          <div>{info.error}</div>
+          {bundledPaths}
+        </>
+      }
+    />
+  );
 }
 
 export function SettingsPage() {
@@ -84,13 +99,85 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [savingFfmpegPath, setSavingFfmpegPath] = useState(false);
   const [agentTesting, setAgentTesting] = useState(false);
+  const [savingAgent, setSavingAgent] = useState(false);
+  const [clearingAgent, setClearingAgent] = useState(false);
+  const [savingAgentModel, setSavingAgentModel] = useState(false);
+  const [loadingAgentModels, setLoadingAgentModels] = useState(false);
+  const [agentModelsEnabled, setAgentModelsEnabled] = useState(false);
+  const [agentModels, setAgentModels] = useState<AgentModelInfo[]>([]);
+  const [savedFfmpegPath, setSavedFfmpegPath] = useState('');
   const [agentTestResult, setAgentTestResult] = useState<{
     ok: boolean;
     text: string;
   } | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [checkResult, setCheckResult] = useState<FfmpegCheckResult | undefined>();
+  const ffmpegExecutablePath = Form.useWatch(['ffmpeg', 'executable_path'], form);
+  const agentSettings = Form.useWatch('agent', form);
+  const hasAgentConfig = Boolean(
+    String(agentSettings?.api_key || '').trim() ||
+      agentSettings?.api_key_configured ||
+      agentSettings?.provider ||
+      String(agentSettings?.base_url || '').trim() ||
+      String(agentSettings?.model || '').trim() ||
+      (agentSettings?.models?.length ?? 0) > 0,
+  );
+
+  const canUseAgentModels = (agent: Partial<AgentSettings> | undefined) =>
+    Boolean(agent?.api_key_configured && agent.provider && agent.base_url);
+
+  const resetAgentModelChoices = () => {
+    setAgentModelsEnabled(false);
+    setAgentModels([]);
+    form.setFieldValue(['agent', 'model'], '');
+    form.setFieldValue(['agent', 'models'], []);
+  };
+
+  const refreshAgentModels = async (
+    settings: Settings,
+    options: { showError?: boolean } = {},
+  ) => {
+    if (!canUseAgentModels(settings.agent)) {
+      setAgentModelsEnabled(false);
+      setAgentModels([]);
+      form.setFieldValue(['agent', 'models'], []);
+      return false;
+    }
+    setLoadingAgentModels(true);
+    try {
+      const response = await getAgentModels();
+      const defaultModel =
+        response.default_model || (!response.error ? response.models[0]?.id : '') || '';
+      setAgentModels(response.models);
+      form.setFieldValue(['agent', 'models'], response.models);
+      form.setFieldValue(['agent', 'model'], defaultModel);
+      setAgentModelsEnabled(response.models.length > 0);
+      if (response.error && (options.showError ?? true)) {
+        message.warning(response.error);
+      }
+      return !response.error;
+    } catch (error) {
+      setAgentModels([]);
+      form.setFieldValue(['agent', 'models'], []);
+      setAgentModelsEnabled(false);
+      if (options.showError ?? true) {
+        message.error(error instanceof Error ? error.message : '获取模型列表失败');
+      }
+      return false;
+    } finally {
+      setLoadingAgentModels(false);
+    }
+  };
+
+  const applySettings = (settings: Settings) => {
+    const models = settings.agent.models ?? [];
+    form.setFieldsValue(settings);
+    setAgentModels(models);
+    setAgentModelsEnabled(canUseAgentModels(settings.agent) && models.length > 0);
+    setSavedFfmpegPath(String(settings.ffmpeg.executable_path || '').trim());
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -103,7 +190,8 @@ export function SettingsPage() {
         if (!mounted) {
           return;
         }
-        form.setFieldsValue(settingsResponse.settings);
+        applySettings(settingsResponse.settings);
+        await refreshAgentModels(settingsResponse.settings);
         setHealth(healthResponse);
       } catch (error) {
         if (mounted) {
@@ -124,7 +212,9 @@ export function SettingsPage() {
     setTesting(true);
     try {
       const values = await form.validateFields();
-      const result = await checkFfmpeg({ ffmpeg: values.ffmpeg });
+      const result = await checkFfmpeg({
+        ffmpeg: values.ffmpeg,
+      });
       setCheckResult(result.ffmpeg);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '检测失败');
@@ -137,13 +227,94 @@ export function SettingsPage() {
     setSaving(true);
     try {
       const response = await saveSettings(values);
-      form.setFieldsValue(response.settings);
+      applySettings(response.settings);
+      await refreshAgentModels(response.settings);
       setCheckResult(response.ffmpeg);
       message.success(`配置已保存到 ${response.settings_path}`);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '保存失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveFfmpegPath = async () => {
+    setSavingFfmpegPath(true);
+    try {
+      await form.validateFields([['ffmpeg', 'executable_path']]);
+      const executablePath = String(
+        form.getFieldValue(['ffmpeg', 'executable_path']) || '',
+      ).trim();
+      const response = await saveFfmpegExecutablePath(executablePath);
+      applySettings(response.settings);
+      setCheckResult(response.ffmpeg);
+      message.success('ffmpeg 路径已保存');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存 ffmpeg 路径失败');
+    } finally {
+      setSavingFfmpegPath(false);
+    }
+  };
+
+  const handleSaveAgent = async () => {
+    setSavingAgent(true);
+    try {
+      await form.validateFields([
+        ['agent', 'api_key'],
+        ['agent', 'provider'],
+        ['agent', 'base_url'],
+        ['agent', 'timeout_seconds'],
+      ]);
+      const values = form.getFieldsValue(true) as Settings;
+      const agent = values.agent;
+      if (!String(agent.api_key || '').trim() && !agent.api_key_configured) {
+        throw new Error('请先填写 API Key');
+      }
+      if (!agent.provider) {
+        throw new Error('请先选择平台 / 供应商');
+      }
+      if (!String(agent.base_url || '').trim()) {
+        throw new Error('请先填写接口地址');
+      }
+      const response = await saveSettings(values);
+      applySettings(response.settings);
+      const modelsReady = await refreshAgentModels(response.settings);
+      message.success(
+        modelsReady ? 'Agent 配置已保存，模型列表已更新' : 'Agent 配置已保存',
+      );
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存 Agent 配置失败');
+    } finally {
+      setSavingAgent(false);
+    }
+  };
+
+  const handleSaveAgentModel = async (model: string) => {
+    setSavingAgentModel(true);
+    try {
+      form.setFieldValue(['agent', 'model'], model);
+      const values = form.getFieldsValue(true) as Settings;
+      const response = await saveSettings(values);
+      applySettings(response.settings);
+      message.success('默认模型已保存');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '保存默认模型失败');
+    } finally {
+      setSavingAgentModel(false);
+    }
+  };
+
+  const handleClearAgent = async () => {
+    setClearingAgent(true);
+    try {
+      const response = await saveSettings({ agent: null });
+      applySettings(response.settings);
+      setAgentTestResult(null);
+      message.success('LLM 配置已清除');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '清除 LLM 配置失败');
+    } finally {
+      setClearingAgent(false);
     }
   };
 
@@ -177,6 +348,13 @@ export function SettingsPage() {
     );
   }
 
+  const ffmpegInfo = checkResult ?? health?.ffmpeg;
+  const bundledFfmpegDir =
+    ffmpegInfo?.bundled_ffmpeg?.replace(/[/\\][^/\\]+$/, '') ??
+    '/Users/gaobol/workspace/wavebank-otakus/backend/vendor/ffmpeg/ffmpeg-9.0.1';
+  const normalizedFfmpegPath = String(ffmpegExecutablePath || '').trim();
+  const isFfmpegPathDirty = normalizedFfmpegPath !== savedFfmpegPath;
+
   return (
     <div className="settings-page">
       <Form form={form} layout="vertical" onFinish={handleSave}>
@@ -190,81 +368,41 @@ export function SettingsPage() {
         >
           <div className="settings-grid">
             <Form.Item
-              name={['ffmpeg', 'mode']}
-              label="ffmpeg 来源"
-              extra="内置模式优先使用项目自带 ffmpeg；未构建时可按下面的开关回退到系统 PATH。"
-            >
-              <Select options={FFMPEG_MODE_OPTIONS} />
-            </Form.Item>
-
-            <Form.Item
-              noStyle
-              shouldUpdate={(prev, next) => prev.ffmpeg?.mode !== next.ffmpeg?.mode}
-            >
-              {({ getFieldValue }) =>
-                getFieldValue(['ffmpeg', 'mode']) === 'custom' ? (
-                  <>
-                    <Form.Item
-                      className="settings-grid__wide"
-                      name={['ffmpeg', 'custom_ffmpeg_path']}
-                      label="ffmpeg 可执行文件路径"
-                      rules={[{ required: true, message: '请填写 ffmpeg 路径' }]}
-                    >
-                      <Input placeholder="/usr/bin/ffmpeg 或 C:\ffmpeg\bin\ffmpeg.exe" />
-                    </Form.Item>
-                    <Form.Item
-                      className="settings-grid__wide"
-                      name={['ffmpeg', 'custom_ffprobe_path']}
-                      label="ffprobe 可执行文件路径（可选）"
-                      extra="留空时会尝试从 ffmpeg 同目录自动推断，或回退到系统 PATH。"
-                    >
-                      <Input placeholder="/usr/bin/ffprobe 或 C:\ffmpeg\bin\ffprobe.exe" />
-                    </Form.Item>
-                  </>
-                ) : null
-              }
-            </Form.Item>
-
-            <Form.Item
-              name={['ffmpeg', 'fallback_to_system']}
-              label="内置 ffmpeg 不可用时回退到系统 PATH"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-
-            <Form.Item
-              name={['ffmpeg', 'auto_download_source']}
-              label="缺少内置 ffmpeg 源码时自动下载"
-              valuePropName="checked"
-              extra="后端启动时会检测 ffmpeg；内置模式且没有可用二进制/源码时，按下方版本与地址自动下载源码并解压。"
-            >
-              <Switch />
-            </Form.Item>
-
-            <Form.Item
-              name={['ffmpeg', 'source_version']}
-              label="内置 ffmpeg 源码版本"
-              extra="仅影响自动下载；解压后保留原始目录名，不强制重命名。"
-            >
-              <Input placeholder="9.0.1" />
-            </Form.Item>
-
-            <Form.Item
               className="settings-grid__wide"
-              name={['ffmpeg', 'download_url_template']}
-              label="源码下载地址模板"
-              extra="支持 {version} 占位符，例如 https://mirror.example.com/ffmpeg-{version}.tar.xz"
+              name={['ffmpeg', 'executable_path']}
+              label="自定义 ffmpeg 绝对路径"
+              extra="留空则使用项目内置 ffmpeg；填写后会从同目录查找 ffprobe。"
+              rules={[
+                {
+                  validator: async (_, value) => {
+                    const trimmed = String(value || '').trim();
+                    if (!trimmed) {
+                      return;
+                    }
+                    const isUnixAbsolute = trimmed.startsWith('/');
+                    const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(trimmed);
+                    if (!isUnixAbsolute && !isWindowsAbsolute) {
+                      throw new Error('请填写 ffmpeg 可执行文件的绝对路径');
+                    }
+                  },
+                },
+              ]}
             >
-              <Input placeholder="https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz" />
-            </Form.Item>
-
-            <Form.Item
-              name={['ffmpeg', 'timeout_seconds']}
-              label="ffmpeg 任务超时（秒）"
-              extra="超过该时长后任务会终止并标记失败。"
-            >
-              <InputNumber min={60} max={86400} step={60} />
+              <Space.Compact block>
+                <Input
+                  allowClear
+                  placeholder={bundledFfmpegDir}
+                />
+                <Button
+                  type="primary"
+                  htmlType="button"
+                  loading={savingFfmpegPath}
+                  disabled={!isFfmpegPathDirty}
+                  onClick={() => void handleSaveFfmpegPath()}
+                >
+                  保存
+                </Button>
+              </Space.Compact>
             </Form.Item>
           </div>
         </Card>
@@ -306,9 +444,42 @@ export function SettingsPage() {
         <Card
           title="Agent"
           extra={
-            <Button loading={agentTesting} onClick={() => void handleTestAgent()}>
-              测试连接
-            </Button>
+            <Space>
+              <Button
+                loading={agentTesting}
+                disabled={clearingAgent}
+                onClick={() => void handleTestAgent()}
+              >
+                测试连接
+              </Button>
+              <Popconfirm
+                title="清除 LLM 配置"
+                description="会清除已保存的 API Key、供应商、接口地址和模型配置。"
+                okText="清除"
+                cancelText="取消"
+                okType="danger"
+                disabled={!hasAgentConfig || savingAgent || clearingAgent}
+                onConfirm={() => void handleClearAgent()}
+              >
+                <Button
+                  danger
+                  htmlType="button"
+                  loading={clearingAgent}
+                  disabled={!hasAgentConfig || savingAgent || agentTesting}
+                >
+                  清除配置
+                </Button>
+              </Popconfirm>
+              <Button
+                type="primary"
+                htmlType="button"
+                loading={savingAgent}
+                disabled={clearingAgent}
+                onClick={() => void handleSaveAgent()}
+              >
+                保存配置
+              </Button>
+            </Space>
           }
         >
           <div className="settings-grid">
@@ -319,25 +490,25 @@ export function SettingsPage() {
               extra={
                 <>
                   <Space>
-                    {form.getFieldValue(['agent', 'api_key_source']) === 'env' ? (
-                      <Tag color="blue">来自 .env</Tag>
-                    ) : form.getFieldValue(['agent', 'api_key_source']) ===
-                      'settings' ? (
+                    {agentSettings?.api_key_source === 'env' ? (
+                      <Tag color="blue">开发环境变量</Tag>
+                    ) : agentSettings?.api_key_source === 'settings' ? (
                       <Tag color="green">已加密保存</Tag>
                     ) : (
                       <Tag>未配置</Tag>
                     )}
                   </Space>
                   <div>
-                    Key 仅保存在本机配置中（加密存储），不会明文回传前端；也可在项目根目录
-                    .env 中配置 DEEPSEEK_API_KEY 作为开发期兜底。
+                    用户配置只保存在本机配置文件中（加密存储），不会明文回传前端。
+                    开发期环境变量只作为后端兜底，不会填入这个输入框。
                   </div>
                 </>
               }
             >
               <Input.Password
-                placeholder="sk-…（留空则清除已保存 Key，未填写时回退到 .env）"
+                placeholder="sk-…（留空则清除已保存 Key）"
                 autoComplete="new-password"
+                onChange={resetAgentModelChoices}
               />
             </Form.Item>
 
@@ -347,19 +518,25 @@ export function SettingsPage() {
               extra="国内平台统一走 OpenAI 兼容的 chat completions 接口。"
             >
               <Select
+                allowClear
+                placeholder="请选择平台"
                 options={AGENT_PROVIDER_OPTIONS}
-                onChange={(value: NonNullable<AgentSettings['provider']>) => {
-                  const preset = AGENT_PROVIDER_PRESETS[value];
+                onChange={(value?: AgentSettings['provider']) => {
                   const current = form.getFieldValue('agent') as
                     | Partial<AgentSettings>
                     | undefined;
+                  const preset = value ? AGENT_PROVIDER_PRESETS[value] : undefined;
                   form.setFieldsValue({
                     agent: {
                       ...(current ?? {}),
-                      base_url: preset.base_url,
-                      model: preset.model,
+                      provider: value ?? '',
+                      base_url: preset?.base_url ?? '',
+                      model: '',
+                      models: [],
                     },
                   });
+                  setAgentModelsEnabled(false);
+                  setAgentModels([]);
                 }}
               />
             </Form.Item>
@@ -374,15 +551,35 @@ export function SettingsPage() {
               label="接口地址（base_url）"
               extra="使用 OpenAI 兼容的 /v1 或厂商文档给出的 base_url。"
             >
-              <Input placeholder="https://api.deepseek.com" />
+              <Input
+                placeholder="选择平台后自动填写，或手动输入 OpenAI 兼容 base_url"
+                onChange={resetAgentModelChoices}
+              />
             </Form.Item>
 
             <Form.Item
               name={['agent', 'model']}
-              label="默认模型（只读）"
-              extra="模型与推理强度已在 Agent 对话框中按次选择，这里仅保留默认值。"
+              label="默认模型"
+              extra="保存 Agent 配置后，会从当前 base_url 获取可用模型。"
             >
-              <Input disabled placeholder="deepseek-v4-flash" />
+              <Select
+                showSearch={{ optionFilterProp: 'label' }}
+                disabled={!agentModelsEnabled}
+                loading={loadingAgentModels || savingAgentModel}
+                placeholder={
+                  agentModelsEnabled
+                    ? '请选择默认模型'
+                    : '保存 API Key、平台和接口地址后可选择'
+                }
+                options={agentModels.map((item) => ({
+                  label: item.id,
+                  value: item.id,
+                }))}
+                notFoundContent={
+                  loadingAgentModels ? '正在获取模型列表' : '暂无可用模型'
+                }
+                onChange={(value) => void handleSaveAgentModel(value)}
+              />
             </Form.Item>
           </div>
 
@@ -399,7 +596,7 @@ export function SettingsPage() {
       </Form>
 
       <Card title="状态">
-        <FfmpegStatus info={checkResult ?? health?.ffmpeg} />
+        <FfmpegStatus info={ffmpegInfo} />
         {health ? (
           <Space orientation="vertical" style={{ marginTop: 12 }}>
             <Typography.Text type="secondary">

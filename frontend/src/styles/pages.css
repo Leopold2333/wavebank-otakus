@@ -31,6 +31,14 @@
   grid-column: 1 / -1;
 }
 
+.task-center-page__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
 .task-center-page__detail pre {
   max-height: 240px;
   padding: 10px 12px;
@@ -40,6 +48,20 @@
   background: #fafafa;
   border: 1px solid rgba(5, 5, 5, 0.06);
   border-radius: 8px;
+}
+
+.task-center-page__task-id {
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.task-center-page__actions {
+  width: 72px;
+}
+
+.task-center-page__actions .ant-btn {
+  padding-inline: 0;
 }
 
 .task-center-page__json-grid {
@@ -56,4 +78,11 @@
 .task-center-page__output {
   margin-bottom: 4px;
   font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .task-center-page__toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

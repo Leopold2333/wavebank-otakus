@@ -15,18 +15,17 @@ from openai import OpenAI
 from ..secrets import resolve_api_key
 
 
-DEFAULT_BASE_URL = "https://api.deepseek.com"
-DEFAULT_MODEL = "deepseek-v4-flash"
-
-
 def _client(settings: dict[str, Any]) -> OpenAI:
     agent = settings.get("agent") or {}
     api_key = resolve_api_key(settings)
     if not api_key:
         raise RuntimeError("尚未配置 Agent API Key，请先在设置页的 Agent 配置中填写")
+    base_url = str(agent.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError("尚未配置 Agent 接口地址，请先在设置页填写 base_url")
     return OpenAI(
         api_key=api_key,
-        base_url=str(agent.get("base_url") or DEFAULT_BASE_URL).rstrip("/"),
+        base_url=base_url,
         timeout=float(agent.get("timeout_seconds") or 120),
     )
 
@@ -40,8 +39,11 @@ def _completion_kwargs(
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     agent = settings.get("agent") or {}
+    model = str(agent.get("model") or "").strip()
+    if not model:
+        raise RuntimeError("尚未选择 Agent 默认模型，请先在设置页保存模型")
     kwargs: dict[str, Any] = {
-        "model": str(agent.get("model") or DEFAULT_MODEL),
+        "model": model,
         "messages": messages,
         "stream": stream,
     }

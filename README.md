@@ -19,7 +19,7 @@ python start.py
 Windows 也可以双击/执行 `start.bat`，Linux/macOS 也可以执行 `./start.sh`。
 启动器会自动完成：
 
-- 使用 `backend/.venv`（不存在时自动创建并安装后端依赖）；
+- 使用 `uv sync --locked` 同步 `backend/uv.lock` 到 `backend/.venv`；
 - 前端缺少 `node_modules` 时自动执行 `npm install`；
 - 启动后端 `127.0.0.1:5000` 和前端 `127.0.0.1:5173`；
 - 等待前后端就绪后自动打开浏览器；
@@ -63,7 +63,7 @@ npm run dev
 
 - 配置持久化：`config/settings.json`（用户覆盖项）与 `config/defaults.json`（项目默认值）
 - ffmpeg/ffprobe 封装：安全参数列表调用、进度解析、日志归档、任务取消
-- ffmpeg 启动检测与源码下载模块：内置模式缺二进制/源码时自动下载解压到 `backend/vendor/ffmpeg/`，保留原始目录名
+- ffmpeg 启动检测、源码下载与自动构建模块：内置模式缺二进制/源码时自动下载解压到 `backend/vendor/ffmpeg/`，并在版本源码目录内构建可执行文件
 - 音频处理 LangGraph 工作流：五个二级功能各自独立封装为一张完整图（collect_params → probe_validate → execute → verify → summarize），并由父图 `router.py` 以“编译子图节点”的方式路由，见 `backend/workflows/audio/`
 - 音频二级任务类型：audio.convert / audio.extract / audio.trim / audio.pitch / audio.denoise，Schema 与任务接口已按二级类型隔离
 - 音频二级功能已接入真实 ffmpeg 命令：格式转换、视频提取音频、音频裁切、变速变调、背景去噪（afftdn）
@@ -81,12 +81,18 @@ npm run dev
 单独启动后端（一般无需手动执行，一键启动已包含）：
 
 ```bash
+cd backend
+uv sync --locked
+cd ..
 backend/.venv/bin/python -m backend.run
 ```
 
 Windows PowerShell：
 
 ```powershell
+cd backend
+uv sync --locked
+cd ..
 backend\.venv\Scripts\python -m backend.run
 ```
 
@@ -103,11 +109,12 @@ WaveBank Otakus 定位是**本机处理工具**：WebUI 与 ffmpeg 运行在同�
 
 ## 内置 ffmpeg
 
-ffmpeg 9.0.1 源码已解压到 `backend/vendor/ffmpeg/ffmpeg-9.0.1/`。默认配置
-`ffmpeg.mode = bundled` 会优先使用 `backend/vendor/ffmpeg/bin/ffmpeg(.exe)`；
-尚未构建时若 `fallback_to_system` 为 `true`，则回退到系统 PATH 中的 ffmpeg。
+ffmpeg 9.0.1 源码会解压到 `backend/vendor/ffmpeg/ffmpeg-9.0.1/`。后端默认
+自动定位并使用版本源码目录内的 `ffmpeg(.exe)` / `ffprobe(.exe)`；无需把
+ffmpeg 注册到系统 PATH。若启动时缺少内置源码或二进制，后端会自动下载源码并
+在源码目录内构建可执行文件。
 
-构建内置 ffmpeg：
+也可以手动构建内置 ffmpeg：
 
 ```bash
 cd backend/vendor/ffmpeg
@@ -117,5 +124,5 @@ chmod +x build-ffmpeg.sh
 
 Windows 见 [backend/vendor/ffmpeg/README.md](backend/vendor/ffmpeg/README.md)。
 
-在「设置」页可以切换为系统 PATH 或自定义路径，配置会保存到 `config/settings.json`，
-无需重启后端。
+在「设置」页可以填写自定义 `ffmpeg` 可执行文件的绝对路径；留空则使用项目内置版本。
+输入框占位提示会显示项目内置 ffmpeg 可执行文件的上一层目录。

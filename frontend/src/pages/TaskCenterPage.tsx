@@ -7,6 +7,7 @@ import {
   Flex,
   Popconfirm,
   Progress,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -14,7 +15,7 @@ import {
   type DescriptionsProps,
   type TableColumnsType,
 } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   cancelTask,
   deleteTask,
@@ -34,9 +35,45 @@ const STATUS_META: Record<TaskRecord['status'], { color: string; label: string }
   cancelled: { color: 'default', label: '已取消' },
 };
 
+type TaskCenterScope = 'pipeline' | 'operations';
+
+const TASK_CENTER_SCOPES: Array<{
+  key: TaskCenterScope;
+  label: string;
+  description: string;
+}> = [
+  {
+    key: 'pipeline',
+    label: 'Pipeline 任务',
+    description: '查看一个任务 ID 下串联多步音频处理的编排任务',
+  },
+  {
+    key: 'operations',
+    label: '单操作任务',
+    description: '查看格式转换、裁切、变调、降噪等单次操作任务',
+  },
+];
+
+function getTaskCenterScope(pathname: string): TaskCenterScope {
+  return pathname.startsWith('/tasks/operations') ? 'operations' : 'pipeline';
+}
+
+function isPipelineTask(task: TaskRecord) {
+  return task.type === 'audio.pipeline';
+}
+
 function formatParams(params: AudioTaskParams, taskType?: string) {
   if (taskType === 'agent.chat') {
     return 'Agent 对话';
+  }
+  if (taskType === 'audio.pipeline') {
+    const steps = (params.steps ?? [])
+      .map((step) => step.taskType ?? step.task_type ?? step.type ?? step.subtype)
+      .filter(Boolean)
+      .map((step) => String(step).replace(/^audio\./, ''));
+    return steps.length > 0
+      ? `Pipeline：${steps.join(' → ')}${params.outputFormat ? ` → ${params.outputFormat}` : ''}`
+      : '音频编排';
   }
   const parts = [
     params.outputFormat ? `→ ${params.outputFormat}` : '',
@@ -67,12 +104,25 @@ function JsonBlock({ title, value }: { title: string; value?: Record<string, unk
 
 export function TaskCenterPage() {
   const { message } = App.useApp();
+  const { pathname } = useLocation();
   const navigate = useNavigate();
   const removeTaskCache = useTaskCacheStore((state) => state.removeTask);
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(false);
   const liveRef = useRef(false);
+  const activeScope = getTaskCenterScope(pathname);
+
+  useEffect(() => {
+    if (
+      pathname === '/tasks' ||
+      (pathname.startsWith('/tasks/') &&
+        !pathname.startsWith('/tasks/pipeline') &&
+        !pathname.startsWith('/tasks/operations'))
+    ) {
+      navigate(`/tasks/${activeScope}`, { replace: true });
+    }
+  }, [activeScope, navigate, pathname]);
 
   const load = useCallback(async () => {
     try {
@@ -170,7 +220,10 @@ export function TaskCenterPage() {
         message.info('该任务类型暂不支持直接进入结果');
         return;
       }
-      const subtype = task.type === 'audio' ? 'convert' : task.type.split('.')[1];
+      const subtype =
+        task.type === 'audio' || task.type === 'audio.pipeline'
+          ? 'convert'
+          : task.type.split('.')[1];
       if (!subtype) {
         return;
       }
@@ -194,9 +247,12 @@ export function TaskCenterPage() {
       {
         title: '任务',
         dataIndex: 'id',
+        width: 320,
         render: (id: string, task) => (
           <Flex vertical gap={2}>
-            <Typography.Text code>{id}</Typography.Text>
+            <Typography.Text code className="task-center-page__task-id">
+              {id}
+            </Typography.Text>
             <Tag color={task.creation_mode === 'rebuild' ? 'purple' : 'blue'}>
               {task.creation_mode === 'rebuild' ? '重构输出' : '新建任务'}
             </Tag>
@@ -248,11 +304,12 @@ export function TaskCenterPage() {
       },
       {
         title: '操作',
-        width: 260,
+        width: 92,
+        align: 'center',
         render: (_, task) => (
-          <Space>
+          <Space direction="vertical" size={4} className="task-center-page__actions">
             {task.status === 'running' || task.status === 'pending' ? (
-              <Button size="small" danger onClick={() => void handleCancel(task.id)}>
+              <Button size="small" danger block onClick={() => void handleCancel(task.id)}>
                 取消
               </Button>
             ) : null}
@@ -261,7 +318,7 @@ export function TaskCenterPage() {
             task.status === 'cancelled' ? (
               <>
                 {task.status === 'completed' ? (
-                  <Button size="small" type="link" onClick={() => handleOpenResult(task)}>
+                  <Button size="small" type="link" block onClick={() => handleOpenResult(task)}>
                     进入结果
                   </Button>
                 ) : null}
@@ -273,7 +330,7 @@ export function TaskCenterPage() {
                   okButtonProps={{ danger: true }}
                   onConfirm={() => void handleDelete(task.id)}
                 >
-                  <Button size="small" danger>
+                  <Button size="small" type="link" danger block>
                     删除
                   </Button>
                 </Popconfirm>
@@ -283,8 +340,25 @@ export function TaskCenterPage() {
         ),
       },
     ],
-    [handleCancel],
+    [handleCancel, handleDelete, handleOpenResult],
   );
+
+  const taskCounts = useMemo(
+    () => ({
+      pipeline: tasks.filter(isPipelineTask).length,
+      operations: tasks.filter((task) => !isPipelineTask(task)).length,
+    }),
+    [tasks],
+  );
+  const visibleTasks = useMemo(
+    () =>
+      tasks.filter((task) =>
+        activeScope === 'pipeline' ? isPipelineTask(task) : !isPipelineTask(task),
+      ),
+    [activeScope, tasks],
+  );
+  const activeScopeMeta =
+    TASK_CENTER_SCOPES.find((item) => item.key === activeScope) ?? TASK_CENTER_SCOPES[0];
 
   return (
     <Card
@@ -292,10 +366,24 @@ export function TaskCenterPage() {
       title="任务中心"
       extra={<Tag color={live ? 'processing' : 'default'}>{live ? '实时连接' : '轮询模式'}</Tag>}
     >
+      <div className="task-center-page__toolbar">
+        <Segmented
+          value={activeScope}
+          options={TASK_CENTER_SCOPES.map((scope) => ({
+            value: scope.key,
+            label: `${scope.label} ${
+              scope.key === 'pipeline' ? taskCounts.pipeline : taskCounts.operations
+            }`,
+          }))}
+          onChange={(value) => navigate(`/tasks/${value}`)}
+        />
+        <Typography.Text type="secondary">{activeScopeMeta.description}</Typography.Text>
+      </div>
       <Table<TaskRecord>
         rowKey="id"
         loading={loading}
-        dataSource={tasks}
+        dataSource={visibleTasks}
+        locale={{ emptyText: `暂无${activeScopeMeta.label}` }}
         pagination={{ pageSize: 10, hideOnSinglePage: true }}
         expandable={{
           expandedRowRender: (task) => {
@@ -340,6 +428,8 @@ export function TaskCenterPage() {
                     <Typography.Text strong>产物</Typography.Text>
                     {task.outputs.map((output) => (
                       <div key={output.path} className="task-center-page__output">
+                        {output.step ? <Tag>Step {output.step}</Tag> : null}
+                        {output.task_type ? <Tag>{output.task_type}</Tag> : null}
                         {output.path}（{formatFileSize(output.size)}）
                       </div>
                     ))}

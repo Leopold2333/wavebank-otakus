@@ -20,9 +20,18 @@ const INTENT_MENU_IDS = ['audio', 'batch', 'separation', 'denoise', 'creative', 
 
 const NON_INTENT_MENU_ITEMS = [
   { key: 'agent', icon: <RobotOutlined />, label: 'Agent 工作台' },
-  { key: 'tasks', icon: <UnorderedListOutlined />, label: '任务中心' },
   { key: 'settings', icon: <SettingOutlined />, label: '设置' },
 ] as const;
+
+const TASK_CENTER_MENU_ITEM = {
+  key: 'tasks',
+  icon: <UnorderedListOutlined />,
+  label: '任务中心',
+  children: [
+    { key: 'tasks/pipeline', label: 'Pipeline 任务' },
+    { key: 'tasks/operations', label: '单操作任务' },
+  ],
+} as const;
 
 export function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
@@ -63,20 +72,31 @@ export function AppLayout() {
         };
       }).filter((item): item is NonNullable<typeof item> => item !== null),
       { type: 'divider' as const },
+      TASK_CENTER_MENU_ITEM,
       ...NON_INTENT_MENU_ITEMS.slice(1),
     ],
     [mediaKind],
   );
 
   const selectedKey =
-    pathname === '/' || pathname.startsWith('/chat/')
+    pathname === '/' || pathname === '/chat' || pathname.startsWith('/chat/')
       ? 'agent'
       : pathname.startsWith('/audio/')
         ? pathname.slice(1)
+        : pathname === '/tasks' || pathname.startsWith('/tasks/')
+          ? pathname === '/tasks'
+            ? 'tasks/pipeline'
+            : pathname.slice(1)
         : pathname.split('/')[1] || 'agent';
-  const titleKey = selectedKey.startsWith('audio/') ? 'audio' : selectedKey;
+  const titleKey = selectedKey.startsWith('audio/')
+    ? 'audio'
+    : selectedKey.startsWith('tasks/')
+      ? 'tasks'
+      : selectedKey;
   const intentTitle = INTENT_DEFINITIONS.find((item) => item.id === titleKey)?.label;
-  const staticTitle = NON_INTENT_MENU_ITEMS.find((item) => item.key === titleKey)?.label;
+  const staticTitle = [...NON_INTENT_MENU_ITEMS, TASK_CENTER_MENU_ITEM].find(
+    (item) => item.key === titleKey,
+  )?.label;
   const currentTitle = intentTitle ?? staticTitle ?? 'WaveBank Otakus';
 
   return (
@@ -100,9 +120,9 @@ export function AppLayout() {
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
-          defaultOpenKeys={['audio']}
+          defaultOpenKeys={['audio', 'tasks']}
           items={menuItems}
-          onClick={({ key }) => navigate(key === 'agent' ? '/' : `/${key}`)}
+          onClick={({ key }) => navigate(key === 'agent' ? '/chat' : `/${key}`)}
           style={{ borderInlineEnd: 'none' }}
         />
       </Sider>

@@ -4,7 +4,6 @@ import json
 import math
 import os
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -12,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import PROJECT_ROOT, load_settings, resolve_project_path
-from ..ffmpeg.setup import get_vendor_dir
+from ..ffmpeg.setup import bundled_binary_paths
 
 
 class FfmpegNotFound(RuntimeError):
@@ -27,74 +26,47 @@ def executable_suffix() -> str:
     return ".exe" if os.name == "nt" else ""
 
 
-def _bundled_bin_dir(settings: dict[str, Any]) -> Path:
-    return get_vendor_dir(settings) / "bin"
-
-
-def _custom_binary(settings: dict[str, Any], name: str) -> Path | None:
-    raw_path = settings["ffmpeg"].get(f"custom_{name}_path")
-    if raw_path:
-        path = resolve_project_path(raw_path)
-        if path and path.exists():
-            return path
-        raise FfmpegNotFound(f"自定义 {name} 不存在：{raw_path}")
-
-    if name == "ffprobe":
-        ffmpeg_path = resolve_project_path(settings["ffmpeg"].get("custom_ffmpeg_path"))
-        if ffmpeg_path:
-            sibling = ffmpeg_path.with_name(f"ffprobe{executable_suffix()}")
-            if sibling.exists():
-                return sibling
-    return None
-
-
 def resolve_binaries(settings: dict[str, Any] | None = None) -> dict[str, str]:
     """Resolve ffmpeg/ffprobe executables according to the current settings."""
     settings = settings or load_settings()
     ffmpeg_cfg = settings.get("ffmpeg", {})
-    mode = ffmpeg_cfg.get("mode", "bundled")
+    paths = bundled_binary_paths(settings)
 
-    if mode not in {"bundled", "system", "custom"}:
-        raise FfmpegNotFound(f"未知的 ffmpeg 模式：{mode}")
+    configured_path = str(ffmpeg_cfg.get("executable_path") or "").strip()
+    if configured_path:
+        ffmpeg_path = Path(configured_path).expanduser()
+        if not ffmpeg_path.is_absolute():
+            raise FfmpegNotFound(f"自定义 ffmpeg 路径必须是绝对路径：{configured_path}")
+        if not ffmpeg_path.is_file():
+            raise FfmpegNotFound(f"自定义 ffmpeg 不存在：{ffmpeg_path}")
+        ffprobe_path = ffmpeg_path.with_name(f"ffprobe{executable_suffix()}")
+        if not ffprobe_path.is_file():
+            raise FfmpegNotFound(
+                f"自定义 ffmpeg 同目录未找到 ffprobe：{ffprobe_path}"
+            )
+        return {
+            "ffmpeg": str(ffmpeg_path),
+            "ffprobe": str(ffprobe_path),
+            "source": "configured",
+        }
 
-    ffmpeg_path: Path | str | None = None
-    ffprobe_path: Path | str | None = None
-    source = mode
-
-    if mode == "custom":
-        ffmpeg_path = _custom_binary(settings, "ffmpeg")
-        ffprobe_path = _custom_binary(settings, "ffprobe") or shutil.which("ffprobe")
-        if not ffmpeg_path:
-            raise FfmpegNotFound("未配置自定义 ffmpeg 路径")
-
-    elif mode == "system":
-        ffmpeg_path = shutil.which("ffmpeg")
-        ffprobe_path = shutil.which("ffprobe")
-
-    else:  # bundled
-        suffix = executable_suffix()
-        bin_dir = _bundled_bin_dir(settings)
-        bundled_ffmpeg = bin_dir / f"ffmpeg{suffix}"
-        bundled_ffprobe = bin_dir / f"ffprobe{suffix}"
-        if bundled_ffmpeg.exists():
-            ffmpeg_path = bundled_ffmpeg
-            ffprobe_path = bundled_ffprobe if bundled_ffprobe.exists() else shutil.which("ffprobe")
-        elif ffmpeg_cfg.get("fallback_to_system", True):
-            ffmpeg_path = shutil.which("ffmpeg")
-            ffprobe_path = shutil.which("ffprobe")
-            source = "system-fallback"
+    ffmpeg_path = paths["ffmpeg"] if paths["ffmpeg"].exists() else None
+    ffprobe_path = paths["ffprobe"] if paths["ffprobe"].exists() else None
 
     if not ffmpeg_path:
         raise FfmpegNotFound(
-            "未找到 ffmpeg。请先在设置中选择系统 PATH，或填写自定义路径；"
-            "内置模式需要先执行 backend/vendor/ffmpeg/build-ffmpeg.sh 构建。"
+            "未找到内置 ffmpeg。"
+            "内置模式会在源码就绪后自动构建可执行文件。"
+        )
+    if not ffprobe_path:
+        raise FfmpegNotFound(
+            "未找到 ffprobe。内置模式会在源码就绪后自动构建可执行文件。"
         )
 
     return {
         "ffmpeg": str(ffmpeg_path),
-        "ffprobe": str(ffprobe_path or ""),
-        "source": source,
-        "mode": mode,
+        "ffprobe": str(ffprobe_path),
+        "source": "bundled",
     }
 
 
@@ -112,12 +84,18 @@ def ffmpeg_version(ffmpeg_path: str) -> str:
 
 
 def get_ffmpeg_info(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = settings or load_settings()
+    bundled_paths = bundled_binary_paths(settings)
+    bundled_info = {
+        "bundled_ffmpeg": str(bundled_paths["ffmpeg"]),
+        "bundled_ffprobe": str(bundled_paths["ffprobe"]),
+    }
     try:
         resolved = resolve_binaries(settings)
         version = ffmpeg_version(resolved["ffmpeg"])
-        return {"ok": True, "version": version, **resolved}
+        return {"ok": True, "version": version, **bundled_info, **resolved}
     except Exception as exc:  # noqa: BLE001 - API 层需要把错误序列化给前端
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), **bundled_info}
 
 
 def probe_audio(audio_path: str, ffprobe_path: str) -> dict[str, Any]:

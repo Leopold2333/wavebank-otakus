@@ -318,7 +318,7 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
         name: 'ffmpegPath',
         label: 'ffmpeg 路径',
         type: 'text',
-        placeholder: '默认使用 PATH 中的 ffmpeg',
+        placeholder: '默认使用项目配置的 ffmpeg',
       },
       {
         name: 'modelDir',

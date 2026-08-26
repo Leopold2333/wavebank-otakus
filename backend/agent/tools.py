@@ -139,6 +139,7 @@ def _get_task_status(arguments: dict[str, Any], context: dict[str, Any]) -> dict
         "status": task["status"],
         "progress": task["progress"],
         "target_path": task.get("target_path"),
+        "outputs": task.get("outputs", []),
         "error": task.get("error"),
     }
 
@@ -167,6 +168,30 @@ def _make_create_audio_task_handler(task_type: str) -> ToolHandler:
         }
 
     return _create_audio_task
+
+
+def _create_audio_pipeline(
+    arguments: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    params = dict(arguments or {})
+    input_path = resolve_project_path(params.get("inputFile"))
+    if input_path is None or not input_path.is_file():
+        raise ValueError(f"输入文件不存在：{params.get('inputFile')}")
+    task = task_manager.create_audio_task(
+        params,
+        task_type="audio.pipeline",
+        mode="new",
+        conversation_id=context.get("conversation_id"),
+    )
+    return {
+        "task_id": task["id"],
+        "task_type": task["type"],
+        "status": task["status"],
+        "progress": task["progress"],
+        "target_path": task.get("target_path"),
+        "message": "编排任务已创建并进入处理队列；中间输出会自动作为下一步输入",
+    }
 
 
 def _register_builtin_tools() -> None:
@@ -214,6 +239,59 @@ def _register_builtin_tools() -> None:
             _audio_tool_schema(subtype_key, schema),
             _make_create_audio_task_handler(task_type),
         )
+    register_tool(
+        "audio_pipeline",
+        "创建一个顺序执行的音频编排任务；系统会自动把每一步输出作为下一步输入，并只返回一个任务 ID。",
+        {
+            "type": "object",
+            "properties": {
+                "inputFile": {
+                    "type": "string",
+                    "description": "起始输入文件绝对路径，必须来自用户附件或探测结果",
+                },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "taskType": {
+                                "type": "string",
+                                "enum": [
+                                    "audio.convert",
+                                    "audio.extract",
+                                    "audio.trim",
+                                    "audio.pitch",
+                                    "audio.denoise",
+                                ],
+                            },
+                            "params": {
+                                "type": "object",
+                                "description": "该步骤独有参数；不要填写 inputFile，系统会自动接上一步输出",
+                            },
+                        },
+                        "required": ["taskType"],
+                        "additionalProperties": False,
+                    },
+                },
+                "outputFormat": {
+                    "type": "string",
+                    "enum": ["mp3", "wav", "flac", "aac", "ogg"],
+                },
+                "outputFileName": {"type": "string"},
+                "bitrate": {"type": "string"},
+                "sampleRate": {"type": "string"},
+                "channels": {"type": "string"},
+                "volumeGain": {"type": "number"},
+                "loudnessTarget": {"type": "string"},
+                "truePeakMax": {"type": "number"},
+            },
+            "required": ["inputFile", "steps"],
+            "additionalProperties": False,
+        },
+        _create_audio_pipeline,
+    )
 
 
 _register_builtin_tools()
