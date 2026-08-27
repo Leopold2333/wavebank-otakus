@@ -25,7 +25,15 @@ from .config import (
     save_settings,
 )
 from .ffmpeg.setup import ensure_prebuilt_runtime
-from .msst import describe_msst_runtime, describe_pymss_catalog
+from .msst import (
+    MsstError,
+    cancel_model_download,
+    describe_msst_runtime,
+    describe_pymss_catalog,
+    get_model_downloads,
+    remove_model,
+    start_model_download,
+)
 from .schemas import SCHEMAS
 from .secrets import (
     normalize_saved_api_key,
@@ -410,6 +418,38 @@ def create_app() -> Flask:
     @app.get("/api/msst/catalog")
     def msst_catalog():
         return jsonify(describe_pymss_catalog())
+
+    @app.post("/api/msst/models/download")
+    def msst_model_download():
+        payload = request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                start_model_download(str(payload.get("modelName") or ""))
+            )
+        except MsstError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.get("/api/msst/models/downloads")
+    def msst_model_downloads():
+        return jsonify({"downloads": get_model_downloads()})
+
+    @app.post("/api/msst/models/cancel")
+    def msst_model_cancel():
+        payload = request.get_json(silent=True) or {}
+        try:
+            return jsonify(
+                cancel_model_download(str(payload.get("modelName") or ""))
+            )
+        except MsstError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.post("/api/msst/models/remove")
+    def msst_model_remove():
+        payload = request.get_json(silent=True) or {}
+        try:
+            return jsonify(remove_model(str(payload.get("modelName") or "")))
+        except MsstError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     @app.get("/api/schemas/<task_type>")
     def get_schema(task_type: str):

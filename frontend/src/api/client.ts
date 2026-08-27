@@ -134,6 +134,8 @@ export interface MsstModelInfo {
   secondaryCategory?: string;
   secondaryCategoryCn?: string;
   categoryPath?: string;
+  /** 模型简短介绍（预留字段，后续填充 README 式文案） */
+  description?: string;
   /** 模型是否已下载到本地缓存 */
   downloaded?: boolean;
   /** 模型 YAML 的可用信息（仅已下载模型可读） */
@@ -186,6 +188,21 @@ export interface MsstCatalogResponse {
   categories: MsstCatalogCategory[];
   modelDir: string;
   error?: string;
+}
+
+export interface MsstDownloadState {
+  modelName: string;
+  status: 'downloading' | 'done' | 'error' | 'cancelled';
+  progress: number;
+  stage?: string;
+  logs?: string[];
+  downloaded?: string[];
+  skipped?: string[];
+  message?: string;
+  /** 取消下载时清理掉的残留文件 */
+  cleaned?: string[];
+  startedAt?: string;
+  updatedAt?: string;
 }
 
 export interface TaskRecord {
@@ -608,6 +625,34 @@ export function getMsstModels(): Promise<MsstModelsResponse> {
 
 export function getMsstCatalog(): Promise<MsstCatalogResponse> {
   return request<MsstCatalogResponse>('/msst/catalog');
+}
+
+export function startMsstDownload(modelName: string): Promise<MsstDownloadState> {
+  return request<MsstDownloadState>('/msst/models/download', {
+    method: 'POST',
+    body: JSON.stringify({ modelName }),
+  });
+}
+
+export function getMsstDownloads(): Promise<{ downloads: MsstDownloadState[] }> {
+  return request<{ downloads: MsstDownloadState[] }>('/msst/models/downloads');
+}
+
+export function cancelMsstDownload(modelName: string): Promise<MsstDownloadState> {
+  return request<MsstDownloadState>('/msst/models/cancel', {
+    method: 'POST',
+    body: JSON.stringify({ modelName }),
+  });
+}
+
+export function removeMsstModel(modelName: string): Promise<{
+  modelName: string;
+  removed: string[];
+}> {
+  return request<{ modelName: string; removed: string[] }>('/msst/models/remove', {
+    method: 'POST',
+    body: JSON.stringify({ modelName }),
+  });
 }
 
 export function getTask(taskId: string): Promise<TaskRecord> {

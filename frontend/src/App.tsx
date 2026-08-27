@@ -15,6 +15,21 @@ const PlaceholderPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('./pages/SettingsPage').then((module) => ({ default: module.SettingsPage })),
 );
+const FfmpegSettingsPage = lazy(() =>
+  import('./pages/settings/FfmpegSettingsPage').then((module) => ({
+    default: module.FfmpegSettingsPage,
+  })),
+);
+const AgentSettingsPage = lazy(() =>
+  import('./pages/settings/AgentSettingsPage').then((module) => ({
+    default: module.AgentSettingsPage,
+  })),
+);
+const MsstSettingsPage = lazy(() =>
+  import('./pages/settings/MsstSettingsPage').then((module) => ({
+    default: module.MsstSettingsPage,
+  })),
+);
 const TaskCenterPage = lazy(() =>
   import('./pages/TaskCenterPage').then((module) => ({ default: module.TaskCenterPage })),
 );
@@ -59,7 +74,12 @@ export default function App() {
                 <Route path="creative" element={<WorkbenchPage />} />
                 <Route path="usb" element={<WorkbenchPage />} />
                 <Route path="tasks/*" element={<TaskCenterPage />} />
-                <Route path="settings" element={<SettingsPage />} />
+                <Route path="settings" element={<SettingsPage />}>
+                  <Route index element={<Navigate to="/settings/ffmpeg" replace />} />
+                  <Route path="ffmpeg" element={<FfmpegSettingsPage />} />
+                  <Route path="agent" element={<AgentSettingsPage />} />
+                  <Route path="msst" element={<MsstSettingsPage />} />
+                </Route>
                 <Route
                   path="*"
                   element={<PlaceholderPage title="页面建设中" description="该页面尚未实现" />}

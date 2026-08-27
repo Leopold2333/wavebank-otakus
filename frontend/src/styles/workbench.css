@@ -378,9 +378,9 @@
 }
 
 .task-run-placeholder__log-line {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   animation: task-run-placeholder-line 0.24s ease-out;
 }
 

@@ -22,7 +22,7 @@ export interface IntentField {
   label: string;
   type: 'text' | 'number' | 'select' | 'switch' | 'slider';
   placeholder?: string;
-  tooltip?: string;
+  tooltip?: ReactNode;
   options?: IntentFieldOption[];
   min?: number;
   max?: number;
@@ -122,7 +122,7 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
         label: '分离模型',
         type: 'select',
         defaultValue: 'MDX23C-8KFFT-InstVoc_HQ.ckpt',
-        tooltip: '模型列表来自后端 pymss 目录；未缓存的模型会在任务执行时自动下载',
+        tooltip: '模型列表来自后端 pymss 目录；仅展示已下载的模型，下载入口在设置页。',
         options: [
           { label: 'MDX23C-8KFFT-InstVoc_HQ（默认）', value: 'MDX23C-8KFFT-InstVoc_HQ.ckpt' },
         ],

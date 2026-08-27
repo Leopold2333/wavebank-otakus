@@ -12,6 +12,7 @@ import {
 } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   createAudioTask,
   getMsstModels,
@@ -164,36 +165,58 @@ export function IntentConfigPanel({
     intentId,
     isAudio ? audioSubtype?.id : undefined,
   );
-  const subtypeFields = audioSubtype?.fields ?? [];
-  const nonAudioInputFields = isAudio
-    ? []
-    : intent.fields.filter(
-        (field) =>
-          field.name !== 'inputFile' &&
-          field.name !== 'outputFormat' &&
-          field.name !== 'outputFileName' &&
-          !field.advanced,
-      );
-  const nonAudioAdvancedFields = isAudio
-    ? []
-    : intent.fields.filter(
-        (field) =>
-          field.advanced &&
-          field.name !== 'inputFile' &&
-          field.name !== 'outputFormat' &&
-          field.name !== 'outputFileName',
-      );
-  const nonAudioOutputFields = isAudio
-    ? []
-    : intent.fields.filter(
-        (field) => field.name === 'outputFormat' || field.name === 'outputFileName',
-      );
+  const subtypeFields = useMemo(
+    () => audioSubtype?.fields ?? [],
+    [audioSubtype],
+  );
+  const nonAudioInputFields = useMemo(
+    () =>
+      isAudio
+        ? []
+        : intent.fields.filter(
+            (field) =>
+              field.name !== 'inputFile' &&
+              field.name !== 'outputFormat' &&
+              field.name !== 'outputFileName' &&
+              !field.advanced,
+          ),
+    [isAudio, intent.fields],
+  );
+  const nonAudioAdvancedFields = useMemo(
+    () =>
+      isAudio
+        ? []
+        : intent.fields.filter(
+            (field) =>
+              field.advanced &&
+              field.name !== 'inputFile' &&
+              field.name !== 'outputFormat' &&
+              field.name !== 'outputFileName',
+          ),
+    [isAudio, intent.fields],
+  );
+  const nonAudioOutputFields = useMemo(
+    () =>
+      isAudio
+        ? []
+        : intent.fields.filter(
+            (field) =>
+              field.name === 'outputFormat' || field.name === 'outputFileName',
+          ),
+    [isAudio, intent.fields],
+  );
   const fields = useMemo(
     () =>
       isAudio
         ? [...subtypeFields, ...COMMON_OUTPUT_FIELDS]
         : [...nonAudioInputFields, ...nonAudioAdvancedFields, ...nonAudioOutputFields],
-    [isAudio, subtypeFields, intent.fields],
+    [
+      isAudio,
+      subtypeFields,
+      nonAudioInputFields,
+      nonAudioAdvancedFields,
+      nonAudioOutputFields,
+    ],
   );
 
   const inputPath = attachments[0]?.path;
@@ -207,9 +230,16 @@ export function IntentConfigPanel({
 
   // 人声分离：从后端拉取 pymss 支持的模型清单填充下拉框
   const [msstModels, setMsstModels] = useState<MsstModelInfo[] | null>(null);
+  const navigate = useNavigate();
+  const availableMsstModels = useMemo(
+    () => (msstModels ?? []).filter((model) => model.downloaded),
+    [msstModels],
+  );
+  const hasAvailableMsstModels =
+    msstModels !== null && availableMsstModels.length > 0;
   const msstModelOptions = useMemo(
     () =>
-      (msstModels ?? []).map((model) => ({
+      availableMsstModels.map((model) => ({
         label: model.name.replace(/\.(ckpt|th|pt|yaml)$/i, ''),
         value: model.name,
         searchText: [
@@ -222,8 +252,29 @@ export function IntentConfigPanel({
           .filter(Boolean)
           .join(' '),
       })),
-    [msstModels],
+    [availableMsstModels],
   );
+  const msstModelTooltip = useMemo(() => {
+    if (msstModels === null) {
+      return '正在加载模型列表…';
+    }
+    const settingsLink = (
+      <a
+        href="/settings/msst"
+        onClick={(event) => {
+          event.preventDefault();
+          navigate('/settings/msst');
+        }}
+      >
+        设置页
+      </a>
+    );
+    return hasAvailableMsstModels ? (
+      <>不同的模型在处理复杂音频时差异较大，可前往{settingsLink}阅读模型能力简介。</>
+    ) : (
+      <>还没有可用模型捏，请前往{settingsLink}下载人声/伴奏双向分离类模型。</>
+    );
+  }, [msstModels, hasAvailableMsstModels, navigate]);
   useEffect(() => {
     if (!isSeparation) {
       return;
@@ -235,12 +286,20 @@ export function IntentConfigPanel({
           return;
         }
         setMsstModels(response.models);
-        if (response.models.length > 0) {
+        const downloaded = response.models.filter((model) => model.downloaded);
+        if (downloaded.length > 0) {
           const current = form.getFieldValue('modelName') as string | undefined;
-          const known = new Set(response.models.map((model) => model.name));
+          const known = new Set(downloaded.map((model) => model.name));
           if (!current || !known.has(current)) {
-            form.setFieldValue('modelName', response.defaultModel);
+            form.setFieldValue(
+              'modelName',
+              known.has(response.defaultModel)
+                ? response.defaultModel
+                : downloaded[0].name,
+            );
           }
+        } else {
+          form.setFieldValue('modelName', undefined);
         }
       })
       .catch(() => {
@@ -252,16 +311,36 @@ export function IntentConfigPanel({
   }, [form, isSeparation]);
 
   const resolveField = useCallback(
-    (field: IntentField): IntentField =>
-      isSeparation && field.name === 'modelName' && msstModelOptions.length > 0
-        ? { ...field, options: msstModelOptions }
-        : field,
-    [isSeparation, msstModelOptions],
+    (field: IntentField): IntentField => {
+      if (!isSeparation || field.name !== 'modelName') {
+        return field;
+      }
+      if (msstModels === null) {
+        return field;
+      }
+      if (!hasAvailableMsstModels) {
+        return {
+          ...field,
+          options: [],
+          placeholder: '暂无已下载模型，请前往设置页下载',
+          disabled: true,
+          tooltip: msstModelTooltip,
+        };
+      }
+      return { ...field, options: msstModelOptions, tooltip: msstModelTooltip };
+    },
+    [
+      isSeparation,
+      msstModels,
+      hasAvailableMsstModels,
+      msstModelOptions,
+      msstModelTooltip,
+    ],
   );
 
   const currentMsstModel = useMemo(
-    () => (msstModels ?? []).find((model) => model.name === modelNameValue) ?? null,
-    [msstModels, modelNameValue],
+    () => availableMsstModels.find((model) => model.name === modelNameValue) ?? null,
+    [availableMsstModels, modelNameValue],
   );
 
   // 高级推理参数：在 tooltip 中展示当前模型 YAML 的推荐默认值
@@ -529,16 +608,40 @@ export function IntentConfigPanel({
                 type="info"
                 showIcon
                 title="输出固定为人声 + 伴奏两条音轨"
-                description="产物文件名自动追加 _vocals / _instrumental 后缀；未缓存的模型会在任务执行时自动下载。"
+                description="产物文件名自动追加 _vocals / _instrumental 后缀；只有已下载的模型会出现在下方列表中。"
                 style={{ marginBottom: 12 }}
               />
             ) : null}
+            {isSeparation ? <Divider plain>模型选择</Divider> : null}
             {nonAudioInputFields.length > 0 ? (
               <div className="audio-param-fields">
                 {nonAudioInputFields.map((field) => (
                   <FieldItem key={field.name} field={resolveField(field)} fill />
                 ))}
               </div>
+            ) : null}
+            {isSeparation && msstModels !== null && !hasAvailableMsstModels ? (
+              <Alert
+                type="info"
+                showIcon
+                title="还没有可用模型"
+                description={
+                  <>
+                    请前往{' '}
+                    <a
+                      href="/settings/msst"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        navigate('/settings/msst');
+                      }}
+                    >
+                      设置页
+                    </a>{' '}
+                    下载人声/伴奏双向分离类模型后再回来。
+                  </>
+                }
+                style={{ marginBottom: 12 }}
+              />
             ) : null}
             {isSeparation &&
             currentMsstModel?.paramCapabilities?.chunkSize === false ? (

@@ -31,6 +31,67 @@
   grid-column: 1 / -1;
 }
 
+/* ---- 设置页：MSST 模型库 ---- */
+.settings-msst-message {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  line-height: 1.6;
+}
+
+.msst-category__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.msst-category__toolbar .ant-input-affix-wrapper {
+  width: 280px;
+  max-width: 100%;
+}
+
+.msst-category__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.msst-model-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(5, 5, 5, 0.06);
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.msst-model-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msst-model-row__actions {
+  flex: none;
+}
+
+.msst-model-row__description {
+  font-size: 12px;
+}
+
+.msst-model-row__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 420px;
+}
+
 .task-center-page__toolbar {
   display: flex;
   align-items: center;

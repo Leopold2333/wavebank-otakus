@@ -20,6 +20,9 @@ export function TaskRunPlaceholder({ task }: { task: TaskRunSnapshot | null }) {
   const logTailRef = useRef<HTMLDivElement>(null);
   const logs = task?.logs ?? [];
   const tail = logs.slice(-TAIL_LINES);
+  const tailLines = tail.map((line) =>
+    line.replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+  );
 
   // 新日志追加时滚动到底部
   useEffect(() => {
@@ -59,8 +62,8 @@ export function TaskRunPlaceholder({ task }: { task: TaskRunSnapshot | null }) {
         className="task-run-placeholder__progress"
       />
       <div className="task-run-placeholder__logs" ref={logTailRef}>
-        {tail.length > 0 ? (
-          tail.map((line, index) => (
+        {tailLines.length > 0 ? (
+          tailLines.map((line, index) => (
             <div key={`${logs.length - tail.length + index}-${line}`} className="task-run-placeholder__log-line">
               {line}
             </div>
