@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { App } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { deleteAgentConversation, getTask, type TaskRecord } from '../api/client';
@@ -18,13 +18,24 @@ import {
   useAgentConversationStore,
 } from '../store/agentConversation';
 import {
-  selectLatestOutputByInput,
+  entryOutputFiles,
+  selectLatestOutputEntryByInput,
   useTaskCacheStore,
+  type TaskOutputFile,
 } from '../store/taskCache';
 import type { IntentId } from '../types';
 import { pathBasename } from '../utils/format';
 
 const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
+
+/** 从任务记录提取输出列表：人声分离返回人声+伴奏双产物，其余返回主输出 */
+function extractTaskOutputs(task: TaskRecord): TaskOutputFile[] {
+  const outputs = task.outputs ?? [];
+  if (task.type === 'audio.vocal_separation' && outputs.length > 1) {
+    return outputs.map((output) => ({ path: output.path, stem: output.stem }));
+  }
+  return task.target_path ? [{ path: task.target_path }] : [];
+}
 
 export function WorkbenchPage() {
   const { message } = App.useApp();
@@ -45,10 +56,9 @@ export function WorkbenchPage() {
   } | null>(null);
   const [agentRefreshKey, setAgentRefreshKey] = useState(0);
   const [chatIntent, setChatIntent] = useState<IntentId | null>(null);
-  const [agentOutputFile, setAgentOutputFile] = useState<{
-    path: string;
-    ts: number;
-  } | null>(null);
+  const [agentOutputFiles, setAgentOutputFiles] = useState<TaskOutputFile[] | null>(
+    null,
+  );
   const { attachments, setLocalPaths } = useFileAttachments();
   const inputPath = attachments[0]?.path;
   const conversationId = useAgentConversationStore((state) => state.conversationId);
@@ -65,12 +75,16 @@ export function WorkbenchPage() {
   const setConversationFile = useAgentConversationStore(
     (state) => state.setConversationFile,
   );
-  const cachedOutputFile = useTaskCacheStore((state) =>
-    selectLatestOutputByInput(state, inputPath),
+  const cachedOutputEntry = useTaskCacheStore((state) =>
+    selectLatestOutputEntryByInput(state, inputPath),
+  );
+  const cachedOutputFiles = useMemo(
+    () => entryOutputFiles(cachedOutputEntry),
+    [cachedOutputEntry],
   );
   const restoreTask = useTaskCacheStore((state) => state.restoreTask);
   const updateOutput = useTaskCacheStore((state) => state.updateOutput);
-  const outputFile = activeIntent ? cachedOutputFile : agentOutputFile;
+  const outputFiles = activeIntent ? cachedOutputFiles : agentOutputFiles;
   /** 防止同一轮进入工作台时重复清理附件 */
   const workbenchEnteredRef = useRef(false);
   /** 最近一次路由键（chat / chat:id / intent:xxx），用于 URL 切换时重置会话 */
@@ -123,7 +137,7 @@ export function WorkbenchPage() {
       if (state.conversationId || state.messages.length > 0) {
         resetConversation();
         setLocalPaths([]);
-        setAgentOutputFile(null);
+        setAgentOutputFiles(null);
       }
       setConversationLoading(false);
     } else if (activeIntent) {
@@ -158,7 +172,7 @@ export function WorkbenchPage() {
       return;
     }
     setMessages([]);
-    setAgentOutputFile(null);
+    setAgentOutputFiles(null);
     setConversation(urlConversationId);
     setConversationLoading(true);
     const conversationFile =
@@ -227,6 +241,10 @@ export function WorkbenchPage() {
           outputFile: task.target_path
             ? { path: task.target_path, ts: Date.now() }
             : null,
+          outputFiles: extractTaskOutputs(task).map((file) => ({
+            ...file,
+            ts: Date.now(),
+          })),
         });
         setRestoreRequest((prev) => ({ taskId, token: (prev?.token ?? 0) + 1 }));
       } catch {
@@ -251,7 +269,15 @@ export function WorkbenchPage() {
         }
         if (task.status === 'completed') {
           if (task.target_path) {
-            updateOutput(activeTaskId, { path: task.target_path, ts: Date.now() });
+            const taskOutputs = extractTaskOutputs(task).map((file) => ({
+              ...file,
+              ts: Date.now(),
+            }));
+            updateOutput(
+              activeTaskId,
+              { path: task.target_path, ts: Date.now() },
+              taskOutputs,
+            );
           }
           message.success('任务完成');
           setActiveTaskId(null);
@@ -305,7 +331,7 @@ export function WorkbenchPage() {
       return;
     }
     setMessages([]);
-    setAgentOutputFile(null);
+    setAgentOutputFiles(null);
     setConversation(selectedConversationId);
     setConversationLoading(true);
     navigate(`/chat/${selectedConversationId}`);
@@ -329,7 +355,7 @@ export function WorkbenchPage() {
     resetConversation();
     setChatIntent(null);
     setLocalPaths([]);
-    setAgentOutputFile(null);
+    setAgentOutputFiles(null);
     setAgentRefreshKey((key) => key + 1);
     navigate('/chat');
   };
@@ -341,7 +367,7 @@ export function WorkbenchPage() {
         resetConversation();
         setChatIntent(null);
         setLocalPaths([]);
-        setAgentOutputFile(null);
+        setAgentOutputFiles(null);
         navigate('/chat');
       }
       setConversationFile(selectedConversationId, null);
@@ -354,7 +380,13 @@ export function WorkbenchPage() {
 
   const handleAgentTaskOutput = useCallback(
     (nextOutputFile: { path: string; ts: number }, task?: TaskRecord | null) => {
-      setAgentOutputFile(nextOutputFile);
+      // 人声分离等任务携带多产物：优先展示完整输出列表
+      const taskOutputs = task ? extractTaskOutputs(task) : [];
+      setAgentOutputFiles(
+        taskOutputs.length > 0
+          ? taskOutputs.map((file) => ({ ...file, ts: nextOutputFile.ts }))
+          : [nextOutputFile],
+      );
       const inputFile =
         (task?.params.inputFile as string | undefined) ??
         (task?.input_params?.inputFile as string | undefined);
@@ -380,7 +412,7 @@ export function WorkbenchPage() {
   return (
     <div className="workbench">
       {activeIntent !== 'batch' ? (
-        <AudioFilePanel outputFile={outputFile} />
+        <AudioFilePanel outputs={outputFiles} />
       ) : null}
       {activeIntent ? (
         <ParamWindow
@@ -410,7 +442,7 @@ export function WorkbenchPage() {
             activeSubtype={null}
             onIntentResolved={handleAgentIntentResolved}
             onTaskOutput={handleAgentTaskOutput}
-            onRollback={() => setAgentOutputFile(null)}
+            onRollback={() => setAgentOutputFiles(null)}
             onConversationActivity={() =>
               setAgentRefreshKey((key) => key + 1)
             }

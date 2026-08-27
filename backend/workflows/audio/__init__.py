@@ -22,6 +22,7 @@ from .pipeline import (
 )
 from .router import compile_audio_router_graph
 from .trim import compile_trim_graph
+from .vocal_separation import compile_vocal_separation_graph
 
 
 AUDIO_GRAPH_COMPILERS: dict[str, Callable[..., Any]] = {
@@ -30,6 +31,7 @@ AUDIO_GRAPH_COMPILERS: dict[str, Callable[..., Any]] = {
     "trim": compile_trim_graph,
     "pitch": compile_pitch_graph,
     "denoise": compile_denoise_graph,
+    "vocal_separation": compile_vocal_separation_graph,
 }
 
 if set(AUDIO_GRAPH_COMPILERS) != set(AUDIO_SUBTYPES):

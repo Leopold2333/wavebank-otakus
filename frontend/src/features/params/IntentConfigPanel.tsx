@@ -12,7 +12,12 @@ import {
 } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createAudioTask, type AudioTaskParams } from '../../api/client';
+import {
+  createAudioTask,
+  getMsstModels,
+  type AudioTaskParams,
+  type MsstModelInfo,
+} from '../../api/client';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
 import {
   selectEntry,
@@ -31,6 +36,9 @@ import { INTENT_MAP, type IntentField } from './intentRegistry';
 import { isVideoPath } from '../../utils/format';
 
 const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
+
+/** 人声分离中支持展示“模型推荐值”的高级参数（数字输入型） */
+const MSST_DEFAULT_VALUE_FIELDS = new Set(['batchSize', 'overlapSize', 'chunkSize']);
 
 function FieldItem({
   field,
@@ -132,6 +140,7 @@ export function IntentConfigPanel({
   const speedValue = Form.useWatch('speed', form);
   const pitchValue = Form.useWatch('pitchSemitones', form);
   const outputFormat = Form.useWatch('outputFormat', form);
+  const modelNameValue = Form.useWatch('modelName', form);
   const pitchAutoRef = useRef(true);
   const applyingAutoPitchRef = useRef(false);
   const submitModeRef = useRef<'new' | 'rebuild'>('new');
@@ -139,19 +148,38 @@ export function IntentConfigPanel({
 
   const intent = INTENT_MAP[intentId];
   const isAudio = intentId === 'audio';
+  const isSeparation = intentId === 'separation';
+  const isTaskIntent = isAudio || isSeparation;
   const audioSubtype = isAudio ? getAudioSubtype(subtype ?? DEFAULT_AUDIO_SUBTYPE) : null;
   const subtypeFields = audioSubtype?.fields ?? [];
   const nonAudioInputFields = isAudio
     ? []
-    : intent.fields.filter((field) => field.name !== 'inputFile' && field.name !== 'outputFormat');
+    : intent.fields.filter(
+        (field) =>
+          field.name !== 'inputFile' &&
+          field.name !== 'outputFormat' &&
+          field.name !== 'outputFileName' &&
+          !field.advanced,
+      );
+  const nonAudioAdvancedFields = isAudio
+    ? []
+    : intent.fields.filter(
+        (field) =>
+          field.advanced &&
+          field.name !== 'inputFile' &&
+          field.name !== 'outputFormat' &&
+          field.name !== 'outputFileName',
+      );
   const nonAudioOutputFields = isAudio
     ? []
-    : intent.fields.filter((field) => field.name === 'outputFormat');
+    : intent.fields.filter(
+        (field) => field.name === 'outputFormat' || field.name === 'outputFileName',
+      );
   const fields = useMemo(
     () =>
       isAudio
         ? [...subtypeFields, ...COMMON_OUTPUT_FIELDS]
-        : [...nonAudioInputFields, ...nonAudioOutputFields],
+        : [...nonAudioInputFields, ...nonAudioAdvancedFields, ...nonAudioOutputFields],
     [isAudio, subtypeFields, intent.fields],
   );
 
@@ -162,6 +190,84 @@ export function IntentConfigPanel({
   const cacheEntry = useTaskCacheStore((state) => selectLatestByInput(state, inputPath));
   const upsertTask = useTaskCacheStore((state) => state.upsertTask);
   const updateParams = useTaskCacheStore((state) => state.updateParams);
+
+  // 人声分离：从后端拉取 pymss 支持的模型清单填充下拉框
+  const [msstModels, setMsstModels] = useState<MsstModelInfo[] | null>(null);
+  const msstModelOptions = useMemo(
+    () =>
+      (msstModels ?? []).map((model) => ({
+        label: model.name.replace(/\.(ckpt|th|pt|yaml)$/i, ''),
+        value: model.name,
+      })),
+    [msstModels],
+  );
+  useEffect(() => {
+    if (!isSeparation) {
+      return;
+    }
+    let cancelled = false;
+    getMsstModels()
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setMsstModels(response.models);
+        if (response.models.length > 0) {
+          const current = form.getFieldValue('modelName') as string | undefined;
+          const known = new Set(response.models.map((model) => model.name));
+          if (!current || !known.has(current)) {
+            form.setFieldValue('modelName', response.defaultModel);
+          }
+        }
+      })
+      .catch(() => {
+        // 拉取失败时保留注册表中的默认选项
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form, isSeparation]);
+
+  const resolveField = useCallback(
+    (field: IntentField): IntentField =>
+      isSeparation && field.name === 'modelName' && msstModelOptions.length > 0
+        ? { ...field, options: msstModelOptions }
+        : field,
+    [isSeparation, msstModelOptions],
+  );
+
+  const currentMsstModel = useMemo(
+    () => (msstModels ?? []).find((model) => model.name === modelNameValue) ?? null,
+    [msstModels, modelNameValue],
+  );
+
+  // 高级推理参数：在 tooltip 中展示当前模型 YAML 的推荐默认值
+  const resolveAdvancedField = useCallback(
+    (field: IntentField): IntentField => {
+      if (
+        !isSeparation ||
+        !field.advanced ||
+        !MSST_DEFAULT_VALUE_FIELDS.has(field.name)
+      ) {
+        return field;
+      }
+      const defaults = currentMsstModel?.defaultInferenceParams;
+      const defaultValue = defaults?.[
+        field.name as 'batchSize' | 'overlapSize' | 'chunkSize'
+      ];
+      if (defaultValue != null) {
+        return { ...field, tooltip: `留空使用模型推荐值: ${defaultValue.toLocaleString()}` };
+      }
+      if (currentMsstModel && currentMsstModel.downloaded === false) {
+        return {
+          ...field,
+          tooltip: '留空使用模型推荐值: 待模型下载后显示',
+        };
+      }
+      return field;
+    },
+    [isSeparation, currentMsstModel],
+  );
 
   const initialValues = useMemo(
     () =>
@@ -195,7 +301,7 @@ export function IntentConfigPanel({
   );
 
   useEffect(() => {
-    if (!isAudio) {
+    if (!isTaskIntent) {
       return;
     }
     for (const field of fields) {
@@ -207,7 +313,7 @@ export function IntentConfigPanel({
         form.setFieldValue(field.name, field.defaultValue);
       }
     }
-  }, [form, isAudio, fields]);
+  }, [form, isTaskIntent, fields]);
 
   useEffect(() => {
     if (!isAudio) {
@@ -222,7 +328,7 @@ export function IntentConfigPanel({
 
   // 同一输入文件已有缓存绑定：把该任务最后一次的参数恢复到表单。
   useEffect(() => {
-    if (!isAudio || !inputPath) {
+    if (!isTaskIntent || !inputPath) {
       return;
     }
     const entry = selectLatestByInput(useTaskCacheStore.getState(), inputPath);
@@ -230,11 +336,11 @@ export function IntentConfigPanel({
       return;
     }
     applyParamsToForm(entry.params, { manualPitch: true });
-  }, [isAudio, inputPath, fields, applyParamsToForm]);
+  }, [isTaskIntent, inputPath, fields, applyParamsToForm]);
 
   // 从任务中心跳转回来：按指定任务恢复参数。
   useEffect(() => {
-    if (!isAudio || !restoreTask) {
+    if (!isTaskIntent || !restoreTask) {
       return;
     }
     const entry = selectEntry(useTaskCacheStore.getState(), restoreTask.taskId);
@@ -242,7 +348,7 @@ export function IntentConfigPanel({
       return;
     }
     applyParamsToForm(entry.params, { manualPitch: true });
-  }, [isAudio, restoreTask, applyParamsToForm]);
+  }, [isTaskIntent, restoreTask, applyParamsToForm]);
 
   useEffect(() => {
     if (!isAudio || audioSubtype?.id !== 'pitch') {
@@ -295,7 +401,9 @@ export function IntentConfigPanel({
     }
     const taskType = isAudio
       ? `audio.${audioSubtype?.id ?? DEFAULT_AUDIO_SUBTYPE}`
-      : 'audio';
+      : isSeparation
+        ? 'audio.vocal_separation'
+        : 'audio';
     const seedTimestamp =
       mode === 'rebuild' ? currentEntry!.timestamp : Date.now();
     const cleanValues = isLossless ? { ...values, bitrate: undefined } : values;
@@ -340,7 +448,7 @@ export function IntentConfigPanel({
             const next = changedValues.pitchSemitones;
             pitchAutoRef.current = next == null || next === '';
           }
-          if (cacheEntry && isAudio) {
+          if (cacheEntry && isTaskIntent) {
             updateParams(cacheEntry.taskId, {
               ...cacheEntry.params,
               ...changedValues,
@@ -387,12 +495,40 @@ export function IntentConfigPanel({
           </>
         ) : (
           <>
+            {isSeparation ? (
+              <Alert
+                type="info"
+                showIcon
+                title="输出固定为人声 + 伴奏两条音轨"
+                description="产物文件名自动追加 _vocals / _instrumental 后缀；未缓存的模型会在任务执行时自动下载。"
+                style={{ marginBottom: 12 }}
+              />
+            ) : null}
             {nonAudioInputFields.length > 0 ? (
               <div className="audio-param-fields">
                 {nonAudioInputFields.map((field) => (
-                  <FieldItem key={field.name} field={field} fill />
+                  <FieldItem key={field.name} field={resolveField(field)} fill />
                 ))}
               </div>
+            ) : null}
+            {nonAudioAdvancedFields.length > 0 ? (
+              <>
+                <Divider plain>高级推理参数（留空使用模型默认）</Divider>
+                <div className="audio-param-fields">
+                  {nonAudioAdvancedFields.map((field) => (
+                    <FieldItem key={field.name} field={resolveAdvancedField(field)} fill />
+                  ))}
+                </div>
+              </>
+            ) : null}
+            {attachments.length > 1 ? (
+              <Alert
+                type="warning"
+                showIcon
+                title="当前仅支持单个文件"
+                description="人声分离严格只处理单个文件，将使用第一个已添加文件。"
+                style={{ marginBottom: 12 }}
+              />
             ) : null}
             {nonAudioOutputFields.length > 0 ? (
               <>
@@ -431,12 +567,12 @@ export function IntentConfigPanel({
               icon={<PlusOutlined />}
               htmlType="submit"
               loading={submittingMode === 'new' || (taskPending && taskPendingMode === 'new')}
-              disabled={taskPending || !isAudio}
+              disabled={taskPending || !isTaskIntent}
               onClick={() => {
                 submitModeRef.current = 'new';
               }}
             >
-              {isAudio ? '新建任务' : '待接入'}
+              {isTaskIntent ? '新建任务' : '待接入'}
             </Button>
           </div>
         </Form.Item>

@@ -233,9 +233,9 @@ config/agent.key
 outputs/
 tmp/
 uploads/
-backend/data/*.db*
 backend/data/*.json
 logs/
+data/
 
 # ffmpeg 预编译包与下载缓存
 ffmpeg*.tar.xz

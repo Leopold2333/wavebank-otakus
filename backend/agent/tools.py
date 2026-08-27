@@ -97,9 +97,14 @@ def _field_to_schema(field: dict[str, Any]) -> dict[str, Any]:
 
 def _audio_tool_schema(subtype_key: str, schema: dict[str, Any]) -> dict[str, Any]:
     task_type = str(schema["task_type"])
+    common_fields = schema.get("commonFields") or COMMON_OUTPUT_FIELDS
     properties: dict[str, Any] = {}
     required: list[str] = []
-    for field in [*schema.get("fields", []), *COMMON_OUTPUT_FIELDS]:
+    for field in [
+        *schema.get("fields", []),
+        *schema.get("advancedFields", []),
+        *common_fields,
+    ]:
         name = field.get("name", "")
         if not name or name in properties:
             continue
@@ -117,6 +122,28 @@ def _audio_tool_schema(subtype_key: str, schema: dict[str, Any]) -> dict[str, An
         "properties": properties,
         "required": required,
         "additionalProperties": False,
+    }
+
+
+def _list_msst_models(arguments: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    from ..msst import describe_msst_runtime
+
+    runtime = describe_msst_runtime()
+    return {
+        "available": runtime["available"],
+        "default_model": runtime["defaultModel"],
+        "model_dir": runtime["modelDir"],
+        "models": [
+            {
+                "name": model["name"],
+                "architecture": model["architecture"],
+                "size_bytes": model["sizeBytes"],
+                "downloaded": model.get("downloaded", False),
+                "default_inference_params": model.get("defaultInferenceParams"),
+            }
+            for model in runtime["models"]
+        ],
+        "error": runtime.get("error") or None,
     }
 
 
@@ -227,6 +254,16 @@ def _register_builtin_tools() -> None:
         },
         _get_task_status,
     )
+    register_tool(
+        "list_msst_models",
+        "列出本地 pymss 目录中支持的人声分离（MSST）模型清单与默认模型，供 audio_vocal_separation 的 modelName 参数选择。",
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        _list_msst_models,
+    )
     for subtype_key, schema in AUDIO_SUBTYPE_SCHEMAS.items():
         task_type = str(schema["task_type"])
         tool_name = task_type.replace(".", "_")
@@ -264,11 +301,12 @@ def _register_builtin_tools() -> None:
                                     "audio.trim",
                                     "audio.pitch",
                                     "audio.denoise",
+                                    "audio.vocal_separation",
                                 ],
                             },
                             "params": {
                                 "type": "object",
-                                "description": "该步骤独有参数；不要填写 inputFile，系统会自动接上一步输出",
+                                "description": "该步骤独有参数；不要填写 inputFile，系统会自动接上一步输出；audio.vocal_separation 只能作为最后一步",
                             },
                         },
                         "required": ["taskType"],

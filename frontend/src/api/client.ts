@@ -104,6 +104,14 @@ export interface AudioTaskParams {
   pitchSemitones?: number;
   speed?: number;
   denoiseStrength?: number;
+  modelName?: string;
+  device?: string;
+  useTta?: boolean;
+  batchSize?: number;
+  overlapSize?: number;
+  chunkSize?: number;
+  standardize?: boolean;
+  normalize?: boolean;
 }
 
 export interface TaskOutput {
@@ -111,6 +119,26 @@ export interface TaskOutput {
   size: number;
   step?: number;
   task_type?: string;
+  stem?: string;
+}
+
+export interface MsstModelInfo {
+  name: string;
+  architecture: string;
+  sizeBytes: number;
+  targetStem: string;
+  /** 模型是否已下载到本地缓存 */
+  downloaded?: boolean;
+  /** 模型 YAML 自带的推荐推理参数（仅已下载模型可读），键为 batchSize/overlapSize/chunkSize */
+  defaultInferenceParams?: Record<'batchSize' | 'overlapSize' | 'chunkSize', number> | null;
+}
+
+export interface MsstModelsResponse {
+  available: boolean;
+  models: MsstModelInfo[];
+  defaultModel: string;
+  modelDir: string;
+  error?: string;
 }
 
 export interface TaskRecord {
@@ -121,6 +149,8 @@ export interface TaskRecord {
   creation_mode?: 'new' | 'rebuild';
   status: 'pending' | 'running' | 'cancelling' | 'completed' | 'failed' | 'cancelled';
   progress: number;
+  /** 当前执行阶段（瞬态，如“下载模型（120/448 MB）”“分离推理（12/180 秒）”）；仅运行中的任务有值 */
+  stage?: string | null;
   tmp_dir: string;
   params: AudioTaskParams;
   input_params?: Record<string, unknown>;
@@ -523,6 +553,10 @@ export function getAgentModels(): Promise<AgentModelsResponse> {
 
 export function getTasks(): Promise<{ tasks: TaskRecord[] }> {
   return request<{ tasks: TaskRecord[] }>('/tasks');
+}
+
+export function getMsstModels(): Promise<MsstModelsResponse> {
+  return request<MsstModelsResponse>('/msst/models');
 }
 
 export function getTask(taskId: string): Promise<TaskRecord> {

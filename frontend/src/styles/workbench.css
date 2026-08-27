@@ -200,7 +200,7 @@
   display: grid;
   grid-template-rows: 0fr;
   margin-top: 0;
-  padding: 0 12px;
+  padding: 0 16px;
   overflow: hidden;
   opacity: 0;
   background: #f6ffed;
@@ -217,7 +217,7 @@
 .audio-output-preview--visible {
   grid-template-rows: 1fr;
   margin-top: 8px;
-  padding-block: 10px;
+  padding-block: 12px;
   opacity: 1;
   border-color: #b7eb8f;
 }
@@ -244,6 +244,47 @@
   max-width: 260px;
   color: rgba(0, 0, 0, 0.65);
   font-size: 13px;
+}
+
+/* 多 stem（人声分离）输出：一行并排两个播放器 */
+.audio-output-preview__players {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.audio-output-preview__players--grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+  .audio-output-preview__players--grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.audio-output-preview__player {
+  min-width: 0;
+}
+
+.audio-output-preview__stem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.audio-output-preview__stem-tag {
+  flex: none;
+  margin-inline-end: 0;
+}
+
+.audio-output-preview__stem-name {
+  min-width: 0;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 20px;
 }
 
 .audio-file-preview__empty {
@@ -425,6 +466,11 @@
   gap: 8px;
   height: 60px;
   padding: 0 8px;
+}
+
+/* 播放/暂停按钮与进度条之间保持额外呼吸间距 */
+.styled-media-player__controls > .ant-btn:first-child {
+  margin-right: 10px;
 }
 
 .styled-media-player__controls .ant-btn .anticon {

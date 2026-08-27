@@ -35,6 +35,12 @@ const STATUS_META: Record<TaskRecord['status'], { color: string; label: string }
   cancelled: { color: 'default', label: '已取消' },
 };
 
+const TERMINAL_TASK_STATUSES: TaskRecord['status'][] = [
+  'completed',
+  'failed',
+  'cancelled',
+];
+
 type TaskCenterScope = 'pipeline' | 'operations';
 
 const TASK_CENTER_SCOPES: Array<{
@@ -89,6 +95,16 @@ function formatParams(params: AudioTaskParams, taskType?: string) {
     params.pitchSemitones ? `变调 ${params.pitchSemitones}` : '',
     params.speed && params.speed !== 1 ? `${params.speed}x` : '',
     params.denoiseStrength != null ? `降噪 ${params.denoiseStrength}` : '',
+    params.modelName
+      ? `模型 ${String(params.modelName).replace(/\.(ckpt|th|pt|yaml)$/i, '')}`
+      : '',
+    params.device && params.device !== 'auto' ? `设备 ${String(params.device).toUpperCase()}` : '',
+    params.useTta ? 'TTA' : '',
+    params.batchSize != null ? `批 ${params.batchSize}` : '',
+    params.overlapSize != null ? `重叠 ${params.overlapSize}` : '',
+    params.chunkSize != null ? `分块 ${params.chunkSize}` : '',
+    params.standardize ? '输入标准化' : '',
+    params.normalize ? '输出归一化' : '',
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : params.inputFile;
 }
@@ -220,6 +236,20 @@ export function TaskCenterPage() {
         message.info('该任务类型暂不支持直接进入结果');
         return;
       }
+      if (task.type === 'audio.vocal_separation') {
+        const separationOutput = task.target_path || task.outputs[0]?.path;
+        if (!separationOutput) {
+          message.warning('该任务没有可用的输出文件');
+          return;
+        }
+        navigate('/separation', {
+          state: {
+            outputFile: { path: separationOutput, ts: Date.now() },
+            taskId: task.id,
+          },
+        });
+        return;
+      }
       const subtype =
         task.type === 'audio' || task.type === 'audio.pipeline'
           ? 'convert'
@@ -277,17 +307,28 @@ export function TaskCenterPage() {
         dataIndex: 'progress',
         width: 180,
         render: (progress: number, task) => (
-          <Progress
-            percent={Math.round(progress)}
-            size="small"
-            status={
-              task.status === 'failed'
-                ? 'exception'
-                : task.status === 'completed'
-                  ? 'success'
-                  : 'active'
-            }
-          />
+          <Flex vertical gap={2}>
+            <Progress
+              percent={Math.round(progress)}
+              size="small"
+              status={
+                task.status === 'failed'
+                  ? 'exception'
+                  : task.status === 'completed'
+                    ? 'success'
+                    : 'active'
+              }
+            />
+            {task.stage && !TERMINAL_TASK_STATUSES.includes(task.status) ? (
+              <Typography.Text
+                type="secondary"
+                style={{ fontSize: 12, lineHeight: '16px' }}
+                ellipsis={{ tooltip: task.stage }}
+              >
+                {task.stage}
+              </Typography.Text>
+            ) : null}
+          </Flex>
         ),
       },
       {
@@ -430,6 +471,11 @@ export function TaskCenterPage() {
                       <div key={output.path} className="task-center-page__output">
                         {output.step ? <Tag>Step {output.step}</Tag> : null}
                         {output.task_type ? <Tag>{output.task_type}</Tag> : null}
+                        {output.stem ? (
+                          <Tag color={output.stem === 'vocals' ? 'green' : 'blue'}>
+                            {output.stem === 'vocals' ? '人声' : '伴奏'}
+                          </Tag>
+                        ) : null}
                         {output.path}（{formatFileSize(output.size)}）
                       </div>
                     ))}

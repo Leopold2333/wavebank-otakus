@@ -1,19 +1,29 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Spin, Typography } from 'antd';
+import { Spin, Tag, Typography } from 'antd';
 import { FileDoneOutlined } from '@ant-design/icons';
 import { getFileContentUrl } from '../../api/client';
 import { LocalFilePicker } from '../files/LocalFilePickerLazy';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
-import { useTaskCacheStore } from '../../store/taskCache';
+import { useTaskCacheStore, type TaskOutputFile } from '../../store/taskCache';
 import { isVideoPath, pathBasename } from '../../utils/format';
 import { PanelHeader } from '../layout/PanelHeader';
 import { AudioFilePreview } from './AudioFilePreview';
 import { StyledMediaPlayer } from './StyledMediaPlayer';
 
+const STEM_META: Record<string, { label: string; color: string }> = {
+  vocals: { label: '人声', color: 'green' },
+  instrumental: { label: '伴奏', color: 'blue' },
+};
+
+function stemMeta(stem?: string) {
+  return STEM_META[stem ?? ''] ?? null;
+}
+
 export function AudioFilePanel({
-  outputFile,
+  outputs,
 }: {
-  outputFile?: { path: string; ts?: number } | null;
+  /** 任务产物列表；人声分离携带 vocals/instrumental 双输出，其余为单输出 */
+  outputs?: TaskOutputFile[] | null;
 }) {
   const { attachments, setLocalPaths } = useFileAttachments();
   const clearTaskInput = useTaskCacheStore((state) => state.clearInput);
@@ -21,10 +31,7 @@ export function AudioFilePanel({
   const isVideo = isVideoPath(path ?? '');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [outputVisible, setOutputVisible] = useState(false);
-  const [outputData, setOutputData] = useState<{
-    path: string;
-    ts?: number;
-  } | null>(null);
+  const [outputItems, setOutputItems] = useState<TaskOutputFile[] | null>(null);
   const outputTimerRef = useRef<number | null>(null);
   const previousPathRef = useRef(path);
   const [previewSwitching, setPreviewSwitching] = useState(false);
@@ -42,12 +49,12 @@ export function AudioFilePanel({
   const previewLoading = previewSwitching || previousPathRef.current !== path;
 
   useEffect(() => {
-    if (outputFile) {
+    if (outputs && outputs.length > 0) {
       if (outputTimerRef.current) {
         window.clearTimeout(outputTimerRef.current);
         outputTimerRef.current = null;
       }
-      setOutputData(outputFile);
+      setOutputItems(outputs);
       setOutputVisible(false);
       const frame = window.requestAnimationFrame(() => setOutputVisible(true));
       return () => window.cancelAnimationFrame(frame);
@@ -57,7 +64,7 @@ export function AudioFilePanel({
       window.clearTimeout(outputTimerRef.current);
     }
     outputTimerRef.current = window.setTimeout(() => {
-      setOutputData(null);
+      setOutputItems(null);
       outputTimerRef.current = null;
     }, 300);
     return () => {
@@ -66,9 +73,11 @@ export function AudioFilePanel({
         outputTimerRef.current = null;
       }
     };
-  }, [outputFile]);
+  }, [outputs]);
 
-  const hasOutputPanel = Boolean(outputData);
+  const hasOutputPanel = Boolean(outputItems && outputItems.length > 0);
+  const isMultiOutput = (outputItems?.length ?? 0) > 1;
+  const primaryOutput = outputItems?.[0] ?? null;
 
   return (
     <section
@@ -87,7 +96,7 @@ export function AudioFilePanel({
           onPickFile={() => setPickerOpen(true)}
         />
       </Spin>
-      {outputData ? (
+      {hasOutputPanel && outputItems ? (
         <div
           className={`audio-output-preview${
             outputVisible ? ' audio-output-preview--visible' : ''
@@ -98,16 +107,48 @@ export function AudioFilePanel({
             <div className="audio-output-preview__header">
               <PanelHeader icon={<FileDoneOutlined />}>输出文件</PanelHeader>
               <Typography.Text ellipsis className="audio-output-preview__name">
-                {pathBasename(outputData.path)}
+                {isMultiOutput
+                  ? `${outputItems.length} 个产物`
+                  : pathBasename(primaryOutput?.path ?? '')}
               </Typography.Text>
             </div>
             {outputVisible ? (
-              <StyledMediaPlayer
-                key={outputData.path}
-                src={`${getFileContentUrl(outputData.path)}${outputData.ts ? `&t=${outputData.ts}` : ''}`}
-                kind="audio"
-                variant="output"
-              />
+              <div
+                className={`audio-output-preview__players${
+                  isMultiOutput ? ' audio-output-preview__players--grid' : ''
+                }`}
+              >
+                {outputItems.map((item) => {
+                  const meta = stemMeta(item.stem);
+                  return (
+                    <div
+                      key={item.path}
+                      className="audio-output-preview__player"
+                    >
+                      {meta ? (
+                        <div className="audio-output-preview__stem">
+                          <Tag color={meta.color} className="audio-output-preview__stem-tag">
+                            {meta.label}
+                          </Tag>
+                          <Typography.Text
+                            ellipsis
+                            className="audio-output-preview__stem-name"
+                            title={pathBasename(item.path)}
+                          >
+                            {pathBasename(item.path)}
+                          </Typography.Text>
+                        </div>
+                      ) : null}
+                      <StyledMediaPlayer
+                        key={item.path}
+                        src={`${getFileContentUrl(item.path)}${item.ts ? `&t=${item.ts}` : ''}`}
+                        kind="audio"
+                        variant="output"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               <div className="audio-output-preview__player-placeholder" />
             )}

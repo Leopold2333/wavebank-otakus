@@ -21,6 +21,8 @@ PIPELINE_FINAL_PARAM_KEYS = {
     "loudnessTarget",
 }
 PIPELINE_STEP_LIMIT = 8
+# 人声分离会输出人声+伴奏两个文件，无法作为中间步骤继续衔接，必须收尾。
+PIPELINE_TERMINAL_SUBTYPES = {"vocal_separation"}
 
 
 class AudioPipelineState(TypedDict, total=False):
@@ -68,6 +70,10 @@ def normalize_pipeline_steps(params: dict[str, Any]) -> list[dict[str, Any]]:
             subtype = str(raw_step.get("subtype") or "").strip()
             task_type = f"audio.{subtype}" if subtype else ""
         subtype = _audio_task_type_to_subtype(task_type)
+        if subtype in PIPELINE_TERMINAL_SUBTYPES and index != len(raw_steps):
+            raise ValueError(
+                f"第 {index} 个编排步骤（{subtype}）只能作为编排任务的最后一步"
+            )
         raw_params = raw_step.get("params") or {}
         if not isinstance(raw_params, dict):
             raise ValueError(f"第 {index} 个编排步骤的 params 必须是对象")
@@ -150,6 +156,7 @@ def compile_audio_pipeline_graph(
     *,
     on_log: Callable[[str], None] | None = None,
     on_progress: Callable[[float], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
     process_holder: list[Any] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ):
@@ -171,6 +178,7 @@ def compile_audio_pipeline_graph(
         graph = compile_audio_router_graph(
             on_log=on_log,
             on_progress=_step_progress if on_progress else None,
+            on_stage=on_stage,
             process_holder=process_holder,
         )
         step_state = graph.invoke(

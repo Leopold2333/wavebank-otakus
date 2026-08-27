@@ -104,6 +104,32 @@ INPUT_FILE_FIELD: dict[str, Any] = {
 }
 
 
+MSST_OUTPUT_FORMAT_FIELD: dict[str, Any] = {
+    "name": "outputFormat",
+    "label": "输出格式",
+    "type": "select",
+    "defaultValue": "wav",
+    "options": [
+        {"label": "WAV", "value": "wav"},
+        {"label": "FLAC", "value": "flac"},
+        {"label": "MP3", "value": "mp3"},
+    ],
+}
+
+MSST_OUTPUT_FILE_NAME_FIELD: dict[str, Any] = {
+    "name": "outputFileName",
+    "label": "输出文件名",
+    "type": "text",
+}
+
+# 人声分离不走 ffmpeg，公共输出字段只有格式与文件名；产物固定追加
+# _vocals / _instrumental 后缀并输出两条音轨。
+MSST_COMMON_OUTPUT_FIELDS: list[dict[str, Any]] = [
+    MSST_OUTPUT_FORMAT_FIELD,
+    MSST_OUTPUT_FILE_NAME_FIELD,
+]
+
+
 AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
     "convert": {
         "task_type": "audio.convert",
@@ -205,6 +231,104 @@ AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
             },
         ],
     },
+    "vocal_separation": {
+        "task_type": "audio.vocal_separation",
+        "intent": "audio",
+        "title": "人声分离",
+        "agent": "media_agent",
+        "description": "使用 MSST 模型把音频分离为人声与伴奏两条音轨",
+        "fields": [
+            INPUT_FILE_FIELD,
+            {
+                "name": "modelName",
+                "label": "分离模型",
+                "type": "select",
+                "defaultValue": "MDX23C-8KFFT-InstVoc_HQ.ckpt",
+                "options": [
+                    {
+                        "label": "MDX23C-8KFFT-InstVoc_HQ（默认）",
+                        "value": "MDX23C-8KFFT-InstVoc_HQ.ckpt",
+                    },
+                    {
+                        "label": "MDX23C-8KFFT-InstVoc_HQ_2",
+                        "value": "MDX23C-8KFFT-InstVoc_HQ_2.ckpt",
+                    },
+                    {
+                        "label": "MDX23C_D1581（轻量）",
+                        "value": "MDX23C_D1581.ckpt",
+                    },
+                    {
+                        "label": "melband_roformer_inst_v2",
+                        "value": "melband_roformer_inst_v2.ckpt",
+                    },
+                ],
+            },
+            {
+                "name": "device",
+                "label": "推理设备",
+                "type": "select",
+                "defaultValue": "auto",
+                "options": [
+                    {"label": "自动", "value": "auto"},
+                    {"label": "CPU", "value": "cpu"},
+                    {"label": "CUDA", "value": "cuda"},
+                    {"label": "MPS", "value": "mps"},
+                    {"label": "MLX", "value": "mlx"},
+                ],
+            },
+        ],
+        "advancedFields": [
+            {
+                "name": "useTta",
+                "label": "测试时增强（TTA）",
+                "type": "switch",
+                "defaultValue": False,
+                "tooltip": "正放 / 倒放 / 取反三路推理取平均，质量略有提升，耗时约 3 倍",
+            },
+            {
+                "name": "batchSize",
+                "label": "推理批大小",
+                "type": "number",
+                "min": 1,
+                "max": 16777216,
+                "placeholder": "模型默认",
+                "tooltip": "留空使用模型推荐值；增大可提速但占用更多内存",
+            },
+            {
+                "name": "overlapSize",
+                "label": "分块重叠（采样数）",
+                "type": "number",
+                "min": 1,
+                "max": 16777216,
+                "placeholder": "模型默认",
+                "tooltip": "留空使用模型推荐值；增大可减少分块接缝伪影，但更耗时",
+            },
+            {
+                "name": "chunkSize",
+                "label": "分块大小（采样数）",
+                "type": "number",
+                "min": 1,
+                "max": 16777216,
+                "placeholder": "模型默认",
+                "tooltip": "留空使用模型推荐值；调整不当可能降低质量或耗尽内存",
+            },
+            {
+                "name": "standardize",
+                "label": "输入标准化",
+                "type": "switch",
+                "defaultValue": False,
+                "tooltip": "推理前对输入做标准化，极端偏响/偏轻的源可尝试开启",
+            },
+            {
+                "name": "normalize",
+                "label": "输出峰值归一化",
+                "type": "switch",
+                "defaultValue": False,
+                "tooltip": "推理后把每条音轨峰值归一到 0 dB",
+            },
+        ],
+        "commonFields": MSST_COMMON_OUTPUT_FIELDS,
+    },
 }
 
 
@@ -235,14 +359,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     **{
         f"audio.{key}": {
             **value,
-            "commonFields": COMMON_OUTPUT_FIELDS,
+            "commonFields": value.get("commonFields", COMMON_OUTPUT_FIELDS),
         }
         for key, value in AUDIO_SUBTYPE_SCHEMAS.items()
     },
     **{
         key: {
             **value,
-            "commonFields": COMMON_OUTPUT_FIELDS,
+            "commonFields": value.get("commonFields", COMMON_OUTPUT_FIELDS),
         }
         for key, value in AUDIO_SUBTYPE_SCHEMAS.items()
     },

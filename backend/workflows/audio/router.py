@@ -20,6 +20,7 @@ from .denoise import compile_denoise_graph
 from .extract import compile_extract_graph
 from .pitch import compile_pitch_graph
 from .trim import compile_trim_graph
+from .vocal_separation import compile_vocal_separation_graph
 
 
 def _route_audio_subtype(state: AudioState) -> str:
@@ -34,9 +35,13 @@ def compile_audio_router_graph(
     *,
     on_log: Callable[[str], None] | None = None,
     on_progress: Callable[[float], None] | None = None,
+    on_stage: Callable[[str], None] | None = None,
     process_holder: list[Any] | None = None,
 ):
-    """Build the parent audio graph with one compiled subgraph per subtype."""
+    """Build the parent audio graph with one compiled subgraph per subtype.
+
+    ``on_stage`` 目前仅人声分离子图支持（用于展示“下载模型/推理”等阶段）。
+    """
     builder = StateGraph(AudioState)
     subtype_graphs = {
         "convert": compile_convert_graph(
@@ -62,6 +67,12 @@ def compile_audio_router_graph(
         "denoise": compile_denoise_graph(
             on_log=on_log,
             on_progress=on_progress,
+            process_holder=process_holder,
+        ),
+        "vocal_separation": compile_vocal_separation_graph(
+            on_log=on_log,
+            on_progress=on_progress,
+            on_stage=on_stage,
             process_holder=process_holder,
         ),
     }

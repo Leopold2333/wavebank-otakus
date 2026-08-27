@@ -245,6 +245,7 @@ class TaskManager:
                 "creation_mode": mode,
                 "status": "pending",
                 "progress": 0.0,
+                "stage": None,
                 "params": dict(params),
                 "input_params": input_params,
                 "output_params": output_params,
@@ -276,6 +277,7 @@ class TaskManager:
                 graph = compile_audio_pipeline_graph(
                     on_log=lambda line: self.append_log(task_id, line),
                     on_progress=lambda percent: self.update_progress(task_id, percent),
+                    on_stage=lambda stage: self.update_stage(task_id, stage),
                     process_holder=process_holder,
                     is_cancelled=lambda: self._tasks.get(task_id, {}).get("status")
                     == "cancelling",
@@ -285,6 +287,7 @@ class TaskManager:
                 graph = compile_audio_router_graph(
                     on_log=lambda line: self.append_log(task_id, line),
                     on_progress=lambda percent: self.update_progress(task_id, percent),
+                    on_stage=lambda stage: self.update_stage(task_id, stage),
                     process_holder=process_holder,
                 )
                 state = graph.invoke({"task_id": task_id, "params": params})
@@ -295,6 +298,7 @@ class TaskManager:
                 task.update(
                     status="completed",
                     progress=100.0,
+                    stage=None,
                     command=state.get("command"),
                     outputs=state.get("outputs", []),
                     target_path=state.get("target_path") or task.get("target_path"),
@@ -317,10 +321,11 @@ class TaskManager:
                 if not task:
                     return
                 if task.get("status") == "cancelling":
-                    task.update(status="cancelled", error="任务已取消", updated_at=_now())
+                    task.update(status="cancelled", stage=None, error="任务已取消", updated_at=_now())
                 else:
                     task.update(
                         status="failed",
+                        stage=None,
                         error=str(exc),
                         updated_at=_now(),
                     )
@@ -350,6 +355,17 @@ class TaskManager:
             if task:
                 task["progress"] = round(max(0.0, min(100.0, percent)), 1)
                 db.update_task(task_id, progress=task["progress"])
+
+    def update_stage(self, task_id: str, stage: str | None) -> None:
+        """Update the transient stage label (download/load/infer/...).
+
+        Intentionally memory-only: the stage is a live indicator pushed through
+        the SSE snapshots; persisted tasks have no use for it after restart.
+        """
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task["status"] not in TERMINAL_STATUSES:
+                task["stage"] = str(stage) if stage else None
 
     def cancel_task(self, task_id: str) -> dict[str, Any]:
         with self._lock:

@@ -17,7 +17,14 @@ from ...tools.ffmpeg import (
 )
 
 
-AUDIO_SUBTYPES = ("convert", "extract", "trim", "pitch", "denoise")
+AUDIO_SUBTYPES = (
+    "convert",
+    "extract",
+    "trim",
+    "pitch",
+    "denoise",
+    "vocal_separation",
+)
 
 
 class AudioState(TypedDict, total=False):

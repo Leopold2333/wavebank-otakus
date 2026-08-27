@@ -9,7 +9,12 @@ dependencies = [
     "openai>=1.66,<3",
     "cryptography>=42",
     "python-dotenv>=1.0",
+    "pyyaml>=6",
+    "pymss",
 ]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+pymss = { path = "../../pymss" }

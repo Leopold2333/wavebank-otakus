@@ -26,6 +26,8 @@ export interface IntentField {
   max?: number;
   step?: number;
   defaultValue?: string | number | boolean;
+  /** 高级参数：在参数窗中折叠为单独的“高级推理参数”分组 */
+  advanced?: boolean;
 }
 
 export interface IntentDefinition {
@@ -108,35 +110,17 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
     id: 'separation',
     label: '人声分离',
     agent: 'separation_agent',
-    description: '人声 / 伴奏 / 多 stem 分离，模型选择与导出',
+    description: '基于 MSST 模型分离人声与伴奏，输出两条音轨',
     icon: <ScissorOutlined />,
     fields: [
       {
-        name: 'inputFile',
-        label: '输入音频',
-        type: 'text',
-        placeholder: '选择要分离的音频文件',
-      },
-      {
-        name: 'model',
+        name: 'modelName',
         label: '分离模型',
         type: 'select',
-        defaultValue: 'msst',
+        defaultValue: 'MDX23C-8KFFT-InstVoc_HQ.ckpt',
+        tooltip: '模型列表来自后端 pymss 目录；未缓存的模型会在任务执行时自动下载',
         options: [
-          { label: 'MSST', value: 'msst' },
-          { label: 'Demucs', value: 'demucs' },
-          { label: 'UVR5 风格', value: 'uvr5' },
-        ],
-      },
-      {
-        name: 'stems',
-        label: '分离目标',
-        type: 'select',
-        defaultValue: 'vocals-instrumental',
-        options: [
-          { label: '人声 / 伴奏', value: 'vocals-instrumental' },
-          { label: '四 stem（人声/鼓/贝斯/其他）', value: 'four-stem' },
-          { label: '五 stem', value: 'five-stem' },
+          { label: 'MDX23C-8KFFT-InstVoc_HQ（默认）', value: 'MDX23C-8KFFT-InstVoc_HQ.ckpt' },
         ],
       },
       {
@@ -149,11 +133,66 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
           { label: 'CPU', value: 'cpu' },
           { label: 'CUDA', value: 'cuda' },
           { label: 'MPS', value: 'mps' },
+          { label: 'MLX', value: 'mlx' },
         ],
       },
       {
+        name: 'useTta',
+        label: '测试时增强（TTA）',
+        type: 'switch',
+        defaultValue: false,
+        advanced: true,
+        tooltip: '正放 / 倒放 / 取反三路推理取平均，质量略有提升，耗时约 3 倍',
+      },
+      {
+        name: 'batchSize',
+        label: '推理批大小',
+        type: 'number',
+        min: 1,
+        max: 16777216,
+        placeholder: '模型默认',
+        advanced: true,
+        tooltip: '留空使用模型推荐值；增大可提速但占用更多内存',
+      },
+      {
+        name: 'overlapSize',
+        label: '分块重叠（采样数）',
+        type: 'number',
+        min: 1,
+        max: 16777216,
+        placeholder: '模型默认',
+        advanced: true,
+        tooltip: '留空使用模型推荐值；增大可减少分块接缝伪影，但更耗时',
+      },
+      {
+        name: 'chunkSize',
+        label: '分块大小（采样数）',
+        type: 'number',
+        min: 1,
+        max: 16777216,
+        placeholder: '模型默认',
+        advanced: true,
+        tooltip: '留空使用模型推荐值；调整不当可能降低质量或耗尽内存',
+      },
+      {
+        name: 'standardize',
+        label: '输入标准化',
+        type: 'switch',
+        defaultValue: false,
+        advanced: true,
+        tooltip: '推理前对输入做标准化，极端偏响/偏轻的源可尝试开启',
+      },
+      {
+        name: 'normalize',
+        label: '输出峰值归一化',
+        type: 'switch',
+        defaultValue: false,
+        advanced: true,
+        tooltip: '推理后把每条音轨峰值归一到 0 dB',
+      },
+      {
         name: 'outputFormat',
-        label: '导出格式',
+        label: '输出格式',
         type: 'select',
         defaultValue: 'wav',
         options: [
@@ -161,6 +200,12 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
           { label: 'FLAC', value: 'flac' },
           { label: 'MP3', value: 'mp3' },
         ],
+      },
+      {
+        name: 'outputFileName',
+        label: '输出文件名',
+        type: 'text',
+        placeholder: '默认沿用输入文件名，产物自动追加 _vocals / _instrumental',
       },
     ],
   },

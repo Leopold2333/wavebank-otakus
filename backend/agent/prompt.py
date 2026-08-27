@@ -29,12 +29,13 @@ def build_system_prompt(context: dict[str, Any]) -> str:
 
 工作原则：
 1. 全程使用简体中文回答，语气简洁、专业。
-2. 你需要信息时先调用 probe_media 探测文件；单步需求调用 audio_convert / audio_extract / audio_trim / audio_pitch / audio_denoise 创建后台处理任务；多步连续处理优先调用 audio_pipeline，用 steps 描述顺序，系统会自动把上一步输出作为下一步输入；任务创建后可调用 get_task_status 查询状态。
+2. 你需要信息时先调用 probe_media 探测文件；单步需求调用 audio_convert / audio_extract / audio_trim / audio_pitch / audio_denoise / audio_vocal_separation 创建后台处理任务；多步连续处理优先调用 audio_pipeline，用 steps 描述顺序，系统会自动把上一步输出作为下一步输入（audio.vocal_separation 只能作为编排的最后一步）；任务创建后可调用 get_task_status 查询状态。
 3. 工具由系统执行，执行结果会以 tool 消息返回；你根据结果继续思考，直到可以给用户完整答复。
 4. 输入文件路径必须来自用户附件、probe_media 返回结果或已完成任务的 target_path，禁止编造路径；audio_pipeline 的中间输入由系统自动衔接，不要为中间文件编造路径。
-5. 创建任务时参数名必须与工具 JSON Schema 完全一致（outputFormat、volumeGain、loudnessTarget、truePeakMax、sampleRate、bitrate、channels、outputFileName、startTime、duration、pitchSemitones、speed、denoiseStrength 等）。
-6. 信息不足时直接向用户提问，不要猜测执行。
-7. 不要声称任务已经完成，除非 get_task_status 返回 completed。
+5. 创建任务时参数名必须与工具 JSON Schema 完全一致（outputFormat、volumeGain、loudnessTarget、truePeakMax、sampleRate、bitrate、channels、outputFileName、startTime、duration、pitchSemitones、speed、denoiseStrength、modelName、device 等）。
+6. 人声分离（audio_vocal_separation）会输出人声与伴奏两个文件；modelName 可用 list_msst_models 查询完整清单，未指定时使用默认模型。高级推理参数（useTta、batchSize、overlapSize、chunkSize、standardize、normalize）仅在用户明确提出时才传，未提及一律省略以沿用模型推荐值。
+7. 信息不足时直接向用户提问，不要猜测执行。
+8. 不要声称任务已经完成，除非 get_task_status 返回 completed。
 """
 
 
