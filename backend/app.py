@@ -25,7 +25,7 @@ from .config import (
     save_settings,
 )
 from .ffmpeg.setup import ensure_prebuilt_runtime
-from .msst import describe_msst_runtime
+from .msst import describe_msst_runtime, describe_pymss_catalog
 from .schemas import SCHEMAS
 from .secrets import (
     normalize_saved_api_key,
@@ -406,6 +406,10 @@ def create_app() -> Flask:
     @app.get("/api/msst/models")
     def msst_models():
         return jsonify(describe_msst_runtime())
+
+    @app.get("/api/msst/catalog")
+    def msst_catalog():
+        return jsonify(describe_pymss_catalog())
 
     @app.get("/api/schemas/<task_type>")
     def get_schema(task_type: str):

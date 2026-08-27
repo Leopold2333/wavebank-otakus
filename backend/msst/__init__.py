@@ -1,21 +1,21 @@
 """MSST vocal separation integration.
 
-The Flask process never loads Torch models itself. Model catalog lookups only
-read the pymss ``model_catalog.json`` file (no ``import pymss``), while the
-heavy inference runs in the ``runner.py`` subprocess that speaks a small
-NDJSON protocol on stdout.
+The Flask process never loads Torch models itself. Model catalog lookups parse
+the installed pymss CLI's ``list --json`` output in a short-lived subprocess
+(see ``catalog.py``), while the heavy inference runs in the ``runner.py``
+subprocess that speaks a small NDJSON protocol on stdout.
 
 Public surface used by the workflow layer:
 
 - ``run_vocal_separation(...)``: spawn the runner subprocess and stream
   log/progress events back through callbacks.
 - ``describe_msst_runtime()``: catalog snapshot for the frontend API.
+- ``describe_pymss_catalog()``: full pymss catalog grouped by category.
 - ``validate_msst_model(...)``: cheap pre-flight check for task params.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import queue
@@ -26,12 +26,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
-
 from ..config import PROJECT_ROOT, resolve_project_path
+from .catalog import (
+    VOCAL_SEPARATION_CATEGORY,
+    get_catalog,
+    is_model_downloaded,
+    model_config_info,
+    models_for_category,
+)
 
 # 人声/伴奏双向分离的 pymss catalog secondary_category
-MSST_MODEL_CATEGORY = "vocal_instrumental_dual"
+MSST_MODEL_CATEGORY = VOCAL_SEPARATION_CATEGORY
 # 输出固定为“人声 + 伴奏”两条音轨；与 pymss 支持的无损/有损格式对齐
 MSST_OUTPUT_FORMATS = ("wav", "flac", "mp3")
 MSST_DEVICES = ("auto", "cpu", "cuda", "mps", "mlx")
@@ -63,40 +68,26 @@ def resolve_model_dir() -> Path:
     return model_dir
 
 
-def _pymss_package_dir() -> Path | None:
-    """Locate the installed pymss package without importing it (no Torch)."""
-    try:
-        spec = importlib.util.find_spec("pymss")
-    except (ImportError, ValueError, ModuleNotFoundError):
-        return None
-    if spec is None or not spec.submodule_search_locations:
-        return None
-    locations = list(spec.submodule_search_locations)
-    return Path(locations[0]) if locations else None
-
-
-def _load_msst_catalog() -> list[dict[str, Any]] | None:
-    """Read supported vocal/instrumental dual models from the pymss catalog."""
-    package_dir = _pymss_package_dir()
-    if package_dir is None:
-        return None
-    catalog_path = package_dir / "resources" / "model_catalog.json"
-    if not catalog_path.is_file():
-        return None
-    try:
-        with catalog_path.open(encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    models = [
-        item
-        for item in data.get("models", [])
-        if isinstance(item, dict)
-        and item.get("supported")
-        and item.get("secondary_category") == MSST_MODEL_CATEGORY
-    ]
-    models.sort(key=lambda item: str(item.get("name", "")).lower())
-    return models
+def _model_summary(item: dict[str, Any], model_dir: Path) -> dict[str, Any]:
+    """Shape one catalog entry for the frontend API."""
+    config = model_config_info(item, model_dir)
+    return {
+        "name": item["name"],
+        "aliases": item.get("aliases", []),
+        "modelType": item.get("modelType", ""),
+        "architecture": item["architecture"],
+        "sizeBytes": item["sizeBytes"],
+        "targetStem": item["targetStem"],
+        "primaryCategory": item["primaryCategory"],
+        "primaryCategoryCn": item["primaryCategoryCn"],
+        "secondaryCategory": item["secondaryCategory"],
+        "secondaryCategoryCn": item["secondaryCategoryCn"],
+        "categoryPath": item["categoryPath"],
+        "downloaded": is_model_downloaded(item, model_dir),
+        "config": config or None,
+        "paramCapabilities": item.get("paramCapabilities", {}),
+        "defaultInferenceParams": (config or {}).get("inferenceDefaults") or None,
+    }
 
 
 def list_msst_models() -> list[dict[str, Any]]:
@@ -106,41 +97,85 @@ def list_msst_models() -> list[dict[str, Any]]:
     values (only readable once the model is downloaded); the frontend shows
     them in the advanced-parameter tooltips.
     """
-    models = _load_msst_catalog() or []
-    return [
-        {
-            "name": str(item.get("name", "")),
-            "architecture": str(item.get("architecture", "")),
-            "sizeBytes": int(item.get("size_bytes", 0) or 0),
-            "targetStem": str(item.get("target_stem", "")),
-            "downloaded": _entry_downloaded(item),
-            "defaultInferenceParams": _entry_default_inference_params(item),
-        }
-        for item in models
-        if item.get("name")
-    ]
+    model_dir = resolve_model_dir()
+    catalog = get_catalog(model_dir)
+    models = models_for_category(catalog, MSST_MODEL_CATEGORY)
+    return [_model_summary(item, model_dir) for item in models]
 
 
 def describe_msst_runtime() -> dict[str, Any]:
-    """Snapshot for the frontend: model list, default model, cache dir."""
+    """Snapshot for the vocal separation page: model list + default model."""
     model_dir = resolve_model_dir()
     try:
-        models = list_msst_models()
+        catalog = get_catalog(model_dir)
+        models = [
+            _model_summary(item, model_dir)
+            for item in models_for_category(catalog, MSST_MODEL_CATEGORY)
+        ]
         available = True
         error = ""
     except Exception as exc:  # noqa: BLE001 - 前端需要可读错误
+        catalog = {}
         models = []
         available = False
         error = str(exc)
     known_names = {model["name"] for model in models}
-    default_model = DEFAULT_MSST_MODEL if DEFAULT_MSST_MODEL in known_names else (models[0]["name"] if models else DEFAULT_MSST_MODEL)
+    default_model = (
+        DEFAULT_MSST_MODEL
+        if DEFAULT_MSST_MODEL in known_names
+        else (models[0]["name"] if models else DEFAULT_MSST_MODEL)
+    )
     return {
         "available": available,
         "models": models,
         "defaultModel": default_model,
         "modelDir": str(model_dir),
+        "source": catalog.get("source", "") if available else "",
+        "fetchedAt": catalog.get("fetchedAt", "") if available else "",
         "error": error,
     }
+
+
+def describe_pymss_catalog() -> dict[str, Any]:
+    """Full pymss catalog grouped by category, for future feature pages."""
+    model_dir = resolve_model_dir()
+    try:
+        catalog = get_catalog(model_dir)
+        catalog = {
+            **catalog,
+            "available": True,
+            "error": "",
+            "modelDir": str(model_dir),
+            "models": [_model_summary(item, model_dir) for item in catalog["models"]],
+            "categories": [
+                {
+                    **primary,
+                    "secondaryCategories": [
+                        {
+                            **secondary,
+                            "models": [
+                                _model_summary(item, model_dir)
+                                for item in secondary["models"]
+                            ],
+                        }
+                        for secondary in primary["secondaryCategories"]
+                    ],
+                }
+                for primary in catalog["categories"]
+            ],
+        }
+        return catalog
+    except Exception as exc:  # noqa: BLE001 - 前端需要可读错误
+        return {
+            "available": False,
+            "source": "",
+            "fetchedAt": "",
+            "modelCount": 0,
+            "models": [],
+            "categories": [],
+            "modelDir": str(model_dir),
+            "error": str(exc),
+        }
 
 
 def validate_msst_model(model_name: str) -> str:
@@ -148,19 +183,18 @@ def validate_msst_model(model_name: str) -> str:
     name = str(model_name or "").strip()
     if not name:
         raise MsstError("缺少分离模型名称")
-    models = _load_msst_catalog()
-    if models is None:
-        # pymss 未安装：交给 runner 报出明确的底层错误
+    catalog = get_catalog(resolve_model_dir())
+    models = models_for_category(catalog, MSST_MODEL_CATEGORY)
+    if not models and catalog.get("source") == "none":
+        # pymss 未安装/不可解析：交给 runner 报出明确的底层错误
         return name
-    known = {
-        str(item.get("name", "")).strip().lower(): item for item in models
-    }
+    known = {str(item["name"]).strip().lower(): item["name"] for item in models}
     for item in models:
-        for alias in [item.get("name"), *(item.get("aliases") or [])]:
+        for alias in item.get("aliases", []):
             if str(alias).strip().lower() == name.lower():
                 return str(item["name"])
     if name.lower() in known:
-        return known[name.lower()]["name"]
+        return known[name.lower()]
     raise MsstError(
         f"未知或不支持的人声分离模型：{model_name}（仅支持人声/伴奏双向分离类模型）"
     )
@@ -171,66 +205,19 @@ def msst_model_downloaded(model_name: str) -> bool:
     name = str(model_name or "").strip()
     if not name:
         return False
-    models = _load_msst_catalog() or []
+    catalog = get_catalog(resolve_model_dir())
+    models = models_for_category(catalog, MSST_MODEL_CATEGORY)
     entry = next(
-        (item for item in models if str(item.get("name", "")).lower() == name.lower()),
+        (
+            item
+            for item in models
+            if str(item["name"]).lower() == name.lower()
+        ),
         None,
     )
     if entry is None:
         return False
-    return _entry_downloaded(entry)
-
-
-def _entry_downloaded(entry: dict[str, Any]) -> bool:
-    """Whether the model weights referenced by a catalog entry exist locally."""
-    relpath = str(entry.get("relpath") or "")
-    return bool(relpath) and (resolve_model_dir() / relpath).is_file()
-
-
-def _entry_default_inference_params(entry: dict[str, Any]) -> dict[str, int] | None:
-    """Read the model YAML's recommended inference params (cached models only).
-
-    Mirrors pymss's ``INFERENCE_PARAM_TARGETS`` mapping:
-    ``batch_size``/``overlap_size`` live in the ``inference`` section while
-    ``chunk_size`` lives in ``audio``. Returns ``None`` when the model (and
-    thus its config) has not been downloaded yet.
-    """
-    model_path = str(entry.get("relpath") or "")
-    config_relpath = str(entry.get("config_relpath") or "")
-    if not model_path or not config_relpath:
-        return None
-    model_dir = resolve_model_dir()
-    if not (model_dir / model_path).is_file():
-        return None
-    config_path = model_dir / config_relpath
-    if not config_path.is_file():
-        return None
-    try:
-        with config_path.open(encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError):
-        return None
-    if not isinstance(config, dict):
-        return None
-    inference = config.get("inference") or {}
-    audio = config.get("audio") or {}
-    if not isinstance(inference, dict):
-        inference = {}
-    if not isinstance(audio, dict):
-        audio = {}
-
-    defaults: dict[str, int] = {}
-    for param_key, snake_key, section in (
-        ("batchSize", "batch_size", inference),
-        ("overlapSize", "overlap_size", inference),
-        ("chunkSize", "chunk_size", audio),
-    ):
-        raw = section.get(snake_key)
-        if isinstance(raw, bool) or not isinstance(raw, int):
-            continue
-        if raw > 0:
-            defaults[param_key] = raw
-    return defaults or None
+    return is_model_downloaded(entry, resolve_model_dir())
 
 
 def run_vocal_separation(
@@ -411,6 +398,7 @@ __all__ = [
     "MSST_OUTPUT_FORMATS",
     "MsstError",
     "describe_msst_runtime",
+    "describe_pymss_catalog",
     "list_msst_models",
     "msst_model_downloaded",
     "resolve_model_dir",

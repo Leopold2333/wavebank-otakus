@@ -26,16 +26,15 @@ import {
 } from '../../store/taskCache';
 import type { IntentId } from '../../types';
 import {
-  AUDIO_SUBTYPES,
   COMMON_OUTPUT_FIELDS,
+  DEFAULT_AUDIO_SUBTYPE,
   LOSSLESS_OUTPUT_FORMATS,
   getAudioSubtype,
+  taskTypeForIntent,
   type AudioSubtypeId,
 } from './audioSubtypes';
 import { INTENT_MAP, type IntentField } from './intentRegistry';
 import { isVideoPath } from '../../utils/format';
-
-const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
 
 /** 人声分离中支持展示“模型推荐值”的高级参数（数字输入型） */
 const MSST_DEFAULT_VALUE_FIELDS = new Set(['batchSize', 'overlapSize', 'chunkSize']);
@@ -60,9 +59,18 @@ function FieldItem({
     return (
       <Form.Item {...common}>
         <Select
-          disabled={disabled}
+          disabled={disabled || field.disabled}
           options={field.options}
           placeholder={field.placeholder}
+          showSearch
+          filterOption={(input, option) => {
+            const raw = option as unknown as Record<string, unknown>;
+            const haystack = [raw?.searchText, raw?.label, raw?.value]
+              .filter((part) => part != null)
+              .map((part) => String(part).toLowerCase())
+              .join(' ');
+            return haystack.includes(input.trim().toLowerCase());
+          }}
           style={fillStyle ?? { maxWidth: 360 }}
         />
       </Form.Item>
@@ -73,6 +81,7 @@ function FieldItem({
     return (
       <Form.Item {...common}>
         <InputNumber
+          disabled={disabled || field.disabled}
           min={field.min}
           max={field.max}
           step={field.step}
@@ -151,6 +160,10 @@ export function IntentConfigPanel({
   const isSeparation = intentId === 'separation';
   const isTaskIntent = isAudio || isSeparation;
   const audioSubtype = isAudio ? getAudioSubtype(subtype ?? DEFAULT_AUDIO_SUBTYPE) : null;
+  const activeTaskType = taskTypeForIntent(
+    intentId,
+    isAudio ? audioSubtype?.id : undefined,
+  );
   const subtypeFields = audioSubtype?.fields ?? [];
   const nonAudioInputFields = isAudio
     ? []
@@ -187,9 +200,10 @@ export function IntentConfigPanel({
   const isLossless =
     outputFormat != null &&
     (LOSSLESS_OUTPUT_FORMATS as readonly string[]).includes(String(outputFormat));
-  const cacheEntry = useTaskCacheStore((state) => selectLatestByInput(state, inputPath));
+  const cacheEntry = useTaskCacheStore((state) =>
+    selectLatestByInput(state, inputPath, activeTaskType),
+  );
   const upsertTask = useTaskCacheStore((state) => state.upsertTask);
-  const updateParams = useTaskCacheStore((state) => state.updateParams);
 
   // 人声分离：从后端拉取 pymss 支持的模型清单填充下拉框
   const [msstModels, setMsstModels] = useState<MsstModelInfo[] | null>(null);
@@ -198,6 +212,15 @@ export function IntentConfigPanel({
       (msstModels ?? []).map((model) => ({
         label: model.name.replace(/\.(ckpt|th|pt|yaml)$/i, ''),
         value: model.name,
+        searchText: [
+          model.name,
+          ...(model.aliases ?? []),
+          model.architecture,
+          model.primaryCategoryCn,
+          model.secondaryCategoryCn,
+        ]
+          .filter(Boolean)
+          .join(' '),
       })),
     [msstModels],
   );
@@ -250,6 +273,16 @@ export function IntentConfigPanel({
         !MSST_DEFAULT_VALUE_FIELDS.has(field.name)
       ) {
         return field;
+      }
+      const capability = currentMsstModel?.paramCapabilities?.[
+        field.name as 'batchSize' | 'overlapSize' | 'chunkSize'
+      ];
+      if (capability === false) {
+        return {
+          ...field,
+          disabled: true,
+          tooltip: '该模型不使用此参数，将沿用模型配置',
+        };
       }
       const defaults = currentMsstModel?.defaultInferenceParams;
       const defaultValue = defaults?.[
@@ -331,12 +364,12 @@ export function IntentConfigPanel({
     if (!isTaskIntent || !inputPath) {
       return;
     }
-    const entry = selectLatestByInput(useTaskCacheStore.getState(), inputPath);
+    const entry = selectLatestByInput(useTaskCacheStore.getState(), inputPath, activeTaskType);
     if (!entry) {
       return;
     }
     applyParamsToForm(entry.params, { manualPitch: true });
-  }, [isTaskIntent, inputPath, fields, applyParamsToForm]);
+  }, [isTaskIntent, inputPath, activeTaskType, fields, applyParamsToForm]);
 
   // 从任务中心跳转回来：按指定任务恢复参数。
   useEffect(() => {
@@ -393,7 +426,11 @@ export function IntentConfigPanel({
     }
     const currentEntry =
       mode === 'rebuild'
-        ? selectLatestByInput(useTaskCacheStore.getState(), String(inputFileValue))
+        ? selectLatestByInput(
+            useTaskCacheStore.getState(),
+            String(inputFileValue),
+            activeTaskType,
+          )
         : null;
     if (mode === 'rebuild' && !currentEntry) {
       message.warning('没有可重构的历史任务，请先新建任务');
@@ -424,7 +461,6 @@ export function IntentConfigPanel({
         inputFile: String(inputFileValue),
         timestamp: seedTimestamp,
         params,
-        status: 'newed',
         outputFile: mode === 'rebuild' ? (currentEntry?.outputFile ?? null) : null,
         createdAt: Date.now(),
       });
@@ -447,13 +483,6 @@ export function IntentConfigPanel({
           if ('pitchSemitones' in changedValues && !applyingAutoPitchRef.current) {
             const next = changedValues.pitchSemitones;
             pitchAutoRef.current = next == null || next === '';
-          }
-          if (cacheEntry && isTaskIntent) {
-            updateParams(cacheEntry.taskId, {
-              ...cacheEntry.params,
-              ...changedValues,
-              inputFile: inputPath ?? cacheEntry.inputFile,
-            });
           }
         }}
         style={{ marginTop: 16 }}
@@ -510,6 +539,16 @@ export function IntentConfigPanel({
                   <FieldItem key={field.name} field={resolveField(field)} fill />
                 ))}
               </div>
+            ) : null}
+            {isSeparation &&
+            currentMsstModel?.paramCapabilities?.chunkSize === false ? (
+              <Alert
+                type="info"
+                showIcon
+                title="当前模型为 Demucs 系普通模型"
+                description="batchSize / overlapSize 仍可调整；chunkSize 不生效，将沿用模型配置。"
+                style={{ marginBottom: 12 }}
+              />
             ) : null}
             {nonAudioAdvancedFields.length > 0 ? (
               <>

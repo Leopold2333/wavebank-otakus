@@ -8,8 +8,9 @@ import { AudioFilePanel } from '../features/audio/AudioFilePanel';
 import { useFileAttachments } from '../features/files/FileAttachmentsContext';
 import { ParamWindow } from '../features/params/ParamWindow';
 import {
-  AUDIO_SUBTYPES,
+  DEFAULT_AUDIO_SUBTYPE,
   isAudioSubtypeId,
+  taskTypeForIntent,
   type AudioSubtypeId,
 } from '../features/params/audioSubtypes';
 import { isIntentId } from '../features/params/intentRegistry';
@@ -25,8 +26,6 @@ import {
 } from '../store/taskCache';
 import type { IntentId } from '../types';
 import { pathBasename } from '../utils/format';
-
-const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
 
 /** 从任务记录提取输出列表：人声分离返回人声+伴奏双产物，其余返回主输出 */
 function extractTaskOutputs(task: TaskRecord): TaskOutputFile[] {
@@ -45,6 +44,9 @@ export function WorkbenchPage() {
   const activeIntent = isIntentId(segments[0]) ? segments[0] : null;
   const activeSubtype =
     activeIntent === 'audio' && isAudioSubtypeId(segments[1]) ? segments[1] : null;
+  const activeTaskType = activeIntent
+    ? taskTypeForIntent(activeIntent, activeSubtype ?? undefined)
+    : undefined;
   const urlConversationId =
     segments[0] === 'chat' && segments[1] ? segments[1] : null;
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
@@ -77,7 +79,7 @@ export function WorkbenchPage() {
     (state) => state.setConversationFile,
   );
   const cachedOutputEntry = useTaskCacheStore((state) =>
-    selectLatestOutputEntryByInput(state, inputPath),
+    selectLatestOutputEntryByInput(state, inputPath, activeTaskType),
   );
   const cachedOutputFiles = useMemo(
     () => entryOutputFiles(cachedOutputEntry),
@@ -85,6 +87,7 @@ export function WorkbenchPage() {
   );
   const restoreTask = useTaskCacheStore((state) => state.restoreTask);
   const updateOutput = useTaskCacheStore((state) => state.updateOutput);
+  const clearAllCache = useTaskCacheStore((state) => state.clearAll);
   const outputFiles = activeIntent ? cachedOutputFiles : agentOutputFiles;
   /** 防止同一轮进入工作台时重复清理附件 */
   const workbenchEnteredRef = useRef(false);
@@ -153,6 +156,18 @@ export function WorkbenchPage() {
     setLocalPaths,
     urlConversationId,
   ]);
+
+  // 从任何功能页切出（或卸载）时清空任务缓存与输入文件：
+  // 缓存只在从任务记录跳转回来时通过 restoreTask 重新写入。
+  useEffect(() => {
+    const isFeaturePage = Boolean(activeIntent);
+    return () => {
+      if (isFeaturePage) {
+        clearAllCache();
+        setLocalPaths([]);
+      }
+    };
+  }, [activeIntent, activeSubtype, clearAllCache, setLocalPaths]);
 
   // 进入人工参数页时，清掉属于 Agent 会话的附件（会话缓存仍保留，
   // 切回会话时会重新写回）；人工参数页自己选择的文件不受影响。

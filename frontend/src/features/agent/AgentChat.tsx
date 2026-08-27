@@ -20,10 +20,7 @@ import {
 import { AttachmentList } from '../files/AttachmentList';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
 import { LocalFilePicker } from '../files/LocalFilePickerLazy';
-import {
-  selectLatestByInput,
-  useTaskCacheStore,
-} from '../../store/taskCache';
+import { useTaskCacheStore } from '../../store/taskCache';
 import {
   useAgentConversationStore,
 } from '../../store/agentConversation';
@@ -277,10 +274,6 @@ export function AgentChat({
   const setModel = useAgentConversationStore((state) => state.setModel);
   const setReasoning = useAgentConversationStore((state) => state.setReasoning);
 
-  const inputPath = attachments[0]?.path ?? null;
-  const cachedParams = useTaskCacheStore((state) =>
-    selectLatestByInput(state, inputPath ?? undefined),
-  )?.params;
   const clearTaskInput = useTaskCacheStore((state) => state.clearInput);
 
   const displayMessages = messages.length > 0 ? messages : INITIAL_MESSAGES;
@@ -517,7 +510,6 @@ export function AgentChat({
         content: text,
         intent: activeIntent,
         subtype: activeSubtype,
-        params: cachedParams as Record<string, unknown> | undefined,
         files,
         model: model || undefined,
         reasoning_effort: reasoning === 'off' ? '' : reasoning,

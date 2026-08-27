@@ -7,6 +7,7 @@ import { PanelHeader } from '../layout/PanelHeader';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
 import {
   AUDIO_SUBTYPES,
+  DEFAULT_AUDIO_SUBTYPE,
   type AudioSubtypeId,
 } from './audioSubtypes';
 import type { IntentId } from '../../types';
@@ -24,8 +25,6 @@ interface ParamWindowProps {
   taskPendingMode?: 'new' | 'rebuild' | null;
   restoreTask?: { taskId: string; token: number } | null;
 }
-
-const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
 
 export function ParamWindow({
   activeIntent,

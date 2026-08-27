@@ -2,8 +2,6 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { AudioTaskParams } from '../api/client';
 
-export type TaskCacheStatus = 'newed' | 'reused';
-
 /** 输出文件条目；多 stem 任务（人声分离）携带 stem 标签 */
 export interface TaskOutputFile {
   path: string;
@@ -18,7 +16,6 @@ export interface TaskCacheEntry {
   /** 参与 UUIDv5 计算的时间戳种子（毫秒） */
   timestamp: number;
   params: AudioTaskParams;
-  status: TaskCacheStatus;
   outputFile: { path: string; ts: number } | null;
   /** 全部产物（人声分离为 vocals + instrumental）；单输出任务为空，回退 outputFile */
   outputFiles?: TaskOutputFile[] | null;
@@ -36,13 +33,13 @@ interface TaskCacheState {
       'taskType' | 'inputFile' | 'timestamp' | 'params' | 'outputFile'
     > & { outputFiles?: TaskOutputFile[] | null },
   ) => void;
-  updateParams: (taskId: string, params: AudioTaskParams) => void;
   updateOutput: (
     taskId: string,
     outputFile: { path: string; ts?: number } | null,
     outputFiles?: TaskOutputFile[] | null,
   ) => void;
   clearInput: (inputFile: string) => void;
+  clearAll: () => void;
   removeTask: (taskId: string) => void;
 }
 
@@ -75,27 +72,13 @@ export const useTaskCacheStore = create<TaskCacheState>()(
         set((state) => {
           const prev = state.entries[taskId];
           const entry: TaskCacheEntry = prev
-            ? { ...prev, ...data, status: 'reused', createdAt: Date.now() }
+            ? { ...prev, ...data, createdAt: Date.now() }
             : {
                 taskId,
                 ...data,
-                status: 'reused',
                 createdAt: Date.now(),
               };
           return { entries: withPrune({ ...state.entries, [taskId]: entry }) };
-        }),
-      updateParams: (taskId, params) =>
-        set((state) => {
-          const prev = state.entries[taskId];
-          if (!prev) {
-            return state;
-          }
-          return {
-            entries: withPrune({
-              ...state.entries,
-              [taskId]: { ...prev, params },
-            }),
-          };
         }),
       updateOutput: (taskId, outputFile, outputFiles) =>
         set((state) => {
@@ -126,6 +109,7 @@ export const useTaskCacheStore = create<TaskCacheState>()(
           }
           return { entries };
         }),
+      clearAll: () => set({ entries: {} }),
       removeTask: (taskId) =>
         set((state) => {
           const entries = { ...state.entries };
@@ -150,39 +134,38 @@ export function selectEntry(
 export function selectLatestByInput(
   state: TaskCacheState,
   inputFile?: string,
+  taskType?: string,
 ): TaskCacheEntry | undefined {
   if (!inputFile) {
     return undefined;
   }
   return Object.values(state.entries)
-    .filter((entry) => entry.inputFile === inputFile)
+    .filter(
+      (entry) => entry.inputFile === inputFile && (!taskType || entry.taskType === taskType),
+    )
     .sort((a, b) => b.createdAt - a.createdAt)[0];
-}
-
-export function selectLatestOutputByInput(
-  state: TaskCacheState,
-  inputFile?: string,
-): TaskCacheEntry['outputFile'] {
-  if (!inputFile) {
-    return null;
-  }
-  return (
-    Object.values(state.entries)
-      .filter((entry) => entry.inputFile === inputFile && entry.outputFile)
-      .sort((a, b) => b.createdAt - a.createdAt)[0]?.outputFile ?? null
-  );
 }
 
 /** 最近一次产出文件的缓存条目（稳定引用），供组件派生单/多输出列表 */
 export function selectLatestOutputEntryByInput(
   state: TaskCacheState,
   inputFile?: string,
+  taskType?: string,
 ): TaskCacheEntry | undefined {
   if (!inputFile) {
     return undefined;
   }
   return Object.values(state.entries)
-    .filter((entry) => entry.inputFile === inputFile && entry.outputFile)
+    .filter(
+      (entry) =>
+        entry.inputFile === inputFile &&
+        entry.outputFile &&
+        (!taskType ||
+          entry.taskType === taskType ||
+          // Pipeline 编排任务在任务中心会落到 /audio/convert 查看结果，
+          // 其缓存条目类型为 audio.pipeline，需要兼容当前页面的输出查询。
+          (taskType === 'audio.convert' && entry.taskType === 'audio.pipeline')),
+    )
     .sort((a, b) => b.createdAt - a.createdAt)[0];
 }
 

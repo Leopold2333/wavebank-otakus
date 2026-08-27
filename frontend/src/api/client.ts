@@ -124,11 +124,33 @@ export interface TaskOutput {
 
 export interface MsstModelInfo {
   name: string;
+  aliases?: string[];
+  modelType?: string;
   architecture: string;
   sizeBytes: number;
   targetStem: string;
+  primaryCategory?: string;
+  primaryCategoryCn?: string;
+  secondaryCategory?: string;
+  secondaryCategoryCn?: string;
+  categoryPath?: string;
   /** 模型是否已下载到本地缓存 */
   downloaded?: boolean;
+  /** 模型 YAML 的可用信息（仅已下载模型可读） */
+  config?: {
+    instruments?: string[];
+    sampleRate?: number | null;
+    inferenceDefaults?: Record<
+      'batchSize' | 'overlapSize' | 'numOverlap' | 'chunkSize',
+      number
+    > | null;
+  } | null;
+  /** 当前高级推理参数对该架构是否生效 */
+  paramCapabilities?: {
+    batchSize?: boolean;
+    overlapSize?: boolean;
+    chunkSize?: boolean;
+  };
   /** 模型 YAML 自带的推荐推理参数（仅已下载模型可读），键为 batchSize/overlapSize/chunkSize */
   defaultInferenceParams?: Record<'batchSize' | 'overlapSize' | 'chunkSize', number> | null;
 }
@@ -137,6 +159,31 @@ export interface MsstModelsResponse {
   available: boolean;
   models: MsstModelInfo[];
   defaultModel: string;
+  modelDir: string;
+  source?: string;
+  fetchedAt?: string;
+  error?: string;
+}
+
+export interface MsstCatalogCategory {
+  primaryCategory: string;
+  primaryCategoryCn: string;
+  secondaryCategories: Array<{
+    primaryCategory: string;
+    primaryCategoryCn: string;
+    secondaryCategory: string;
+    secondaryCategoryCn: string;
+    models: MsstModelInfo[];
+  }>;
+}
+
+export interface MsstCatalogResponse {
+  available: boolean;
+  source: string;
+  fetchedAt: string;
+  modelCount: number;
+  models: MsstModelInfo[];
+  categories: MsstCatalogCategory[];
   modelDir: string;
   error?: string;
 }
@@ -557,6 +604,10 @@ export function getTasks(): Promise<{ tasks: TaskRecord[] }> {
 
 export function getMsstModels(): Promise<MsstModelsResponse> {
   return request<MsstModelsResponse>('/msst/models');
+}
+
+export function getMsstCatalog(): Promise<MsstCatalogResponse> {
+  return request<MsstCatalogResponse>('/msst/catalog');
 }
 
 export function getTask(taskId: string): Promise<TaskRecord> {

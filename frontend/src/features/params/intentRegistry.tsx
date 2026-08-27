@@ -13,6 +13,8 @@ import type { IntentId } from '../../types';
 export interface IntentFieldOption {
   label: string;
   value: string | number;
+  /** 供 Select 模糊搜索的附加文本（别名/分类等） */
+  searchText?: string;
 }
 
 export interface IntentField {
@@ -26,6 +28,8 @@ export interface IntentField {
   max?: number;
   step?: number;
   defaultValue?: string | number | boolean;
+  /** 当前条件下该字段不可编辑 */
+  disabled?: boolean;
   /** 高级参数：在参数窗中折叠为单独的“高级推理参数”分组 */
   advanced?: boolean;
 }

@@ -5,6 +5,7 @@ import {
   SwapOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
+import type { IntentId } from '../../types';
 import type { IntentField } from './intentRegistry';
 
 export type AudioSubtypeId = 'convert' | 'extract' | 'trim' | 'pitch' | 'denoise';
@@ -218,6 +219,22 @@ export const AUDIO_SUBTYPES: AudioSubtypeDefinition[] = [
 
 export function isAudioSubtypeId(value: string | undefined): value is AudioSubtypeId {
   return !!value && AUDIO_SUBTYPES.some((item) => item.id === value);
+}
+
+export const DEFAULT_AUDIO_SUBTYPE = AUDIO_SUBTYPES[0].id;
+
+/** 由功能页路由推导实际音频任务类型；非任务型功能页返回 undefined */
+export function taskTypeForIntent(
+  intentId: IntentId,
+  subtype?: AudioSubtypeId,
+): string | undefined {
+  if (intentId === 'audio') {
+    return `audio.${subtype ?? DEFAULT_AUDIO_SUBTYPE}`;
+  }
+  if (intentId === 'separation') {
+    return 'audio.vocal_separation';
+  }
+  return undefined;
 }
 
 export function getAudioSubtype(id: AudioSubtypeId): AudioSubtypeDefinition {

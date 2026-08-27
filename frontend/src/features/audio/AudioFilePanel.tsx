@@ -97,6 +97,7 @@ export function AudioFilePanel({
   }, [outputs]);
 
   const hasOutputPanel = Boolean(outputItems && outputItems.length > 0);
+  const hasRunningPlaceholder = Boolean(runningTask);
   const isMultiOutput = (outputItems?.length ?? 0) > 1;
   const primaryOutput = outputItems?.[0] ?? null;
 
@@ -104,7 +105,9 @@ export function AudioFilePanel({
     <section
       className={`audio-file-panel${
         hasOutputPanel ? ' audio-file-panel--has-output' : ''
-      }${isVideo ? ' audio-file-panel--video' : ''}`}
+      }${hasRunningPlaceholder ? ' audio-file-panel--running' : ''}${
+        isVideo ? ' audio-file-panel--video' : ''
+      }`}
     >
       <Spin
         spinning={previewLoading}
