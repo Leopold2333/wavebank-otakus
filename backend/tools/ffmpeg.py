@@ -43,6 +43,7 @@ def _find_system_ffmpeg() -> Path | None:
             [
                 Path("/opt/homebrew/bin/ffmpeg"),
                 Path("/usr/local/bin/ffmpeg"),
+                Path("/opt/local/bin/ffmpeg"),
             ]
         )
     for candidate in candidates:

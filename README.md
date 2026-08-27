@@ -114,10 +114,11 @@ ffmpeg 的顺序：自定义路径 → 系统 PATH（macOS 含 Homebrew 目录�
 内置预编译包（`backend/vendor/ffmpeg/<版本号或 latest>/`）。都没有时，会按
 操作系统/架构自动下载预编译包：Linux 使用 BtbN/FFmpeg-Builds，
 Windows 使用 GyanD/codexffmpeg（自动拉取最新 release）；
-macOS 推荐 `brew install ffmpeg` 后由系统路径自动发现。
+macOS 会在默认安装流程中自动安装 Homebrew/ffmpeg，或安装后由系统路径自动发现。
+如果需要安装 Homebrew，启动脚本会先询问确认，sudo 密码输入由系统终端处理。
 
 ```bash
-python backend/vendor/ffmpeg/download-ffmpeg.py --install
+python -m backend.ffmpeg
 ```
 
 Windows 见 [backend/vendor/ffmpeg/README.md](backend/vendor/ffmpeg/README.md)。

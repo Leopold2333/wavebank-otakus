@@ -102,6 +102,16 @@ def ensure_frontend_dependencies() -> str:
     return npm
 
 
+def ensure_ffmpeg_runtime(backend_python: str) -> None:
+    print("正在检查 ffmpeg 运行环境...")
+    print("如需安装 Homebrew，macOS 可能会要求确认并输入管理员密码。")
+    subprocess.run(
+        [backend_python, "-m", "backend.ffmpeg"],
+        cwd=str(ROOT_DIR),
+        check=True,
+    )
+
+
 def stream_output(process: subprocess.Popen[str], prefix: str) -> None:
     assert process.stdout is not None
     for line in iter(process.stdout.readline, ""):
@@ -109,13 +119,20 @@ def stream_output(process: subprocess.Popen[str], prefix: str) -> None:
         sys.stdout.flush()
 
 
-def start_process(command: list[str], cwd: Path, prefix: str) -> subprocess.Popen[str]:
+def start_process(
+    command: list[str],
+    cwd: Path,
+    prefix: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[str]:
     kwargs: dict = {
         "cwd": str(cwd),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
         "bufsize": 1,
+        "env": env,
     }
     if is_windows():
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -194,6 +211,7 @@ def main() -> None:
 
     if not args.no_install:
         backend_python = ensure_backend_python()
+        ensure_ffmpeg_runtime(backend_python)
         npm = ensure_frontend_dependencies()
     else:
         backend_python = venv_python()
@@ -211,17 +229,19 @@ def main() -> None:
     env["WAVEBANK_DEBUG"] = "0"
     env.setdefault("WAVEBANK_HOST", BACKEND_HOST)
     env.setdefault("WAVEBANK_PORT", str(BACKEND_PORT))
+    if args.no_install:
+        env["WAVEBANK_SKIP_FFMPEG_AUTO_INSTALL"] = "1"
 
     backend_command = [backend_python, "-m", "backend.run"]
     frontend_command = ["npm", "run", "dev"]
 
     print("正在启动后端（Flask）...")
-    backend = start_process(backend_command, ROOT_DIR, "backend")
+    backend = start_process(backend_command, ROOT_DIR, "backend", env=env)
     print("正在启动前端（Vite）...")
     frontend = start_process(frontend_command, FRONTEND_DIR, "frontend")
 
     try:
-        print("等待后端就绪；首次自动下载内置 ffmpeg（预编译包）时可能需要几分钟。")
+        print("等待后端就绪。")
         if not wait_for_process_url(
             backend,
             f"{BACKEND_URL}/api/health",

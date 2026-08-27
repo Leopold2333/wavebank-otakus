@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from ..config import load_settings
 from .setup import (
     ensure_prebuilt_runtime,
     install_prebuilt,
@@ -18,11 +19,6 @@ def main() -> None:
         "--check",
         action="store_true",
         help="只检查当前平台的内置 ffmpeg 是否可用，不下载",
-    )
-    parser.add_argument(
-        "--install",
-        action="store_true",
-        help="下载并安装当前平台的预编译 ffmpeg",
     )
     parser.add_argument(
         "--force",
@@ -48,12 +44,25 @@ def main() -> None:
             raise SystemExit(1)
         return
 
+    settings = load_settings()
     if args.force:
         result = install_prebuilt(force=True)
     else:
-        result = ensure_prebuilt_runtime()
+        from ..tools.ffmpeg import get_ffmpeg_info
+
+        info = get_ffmpeg_info(settings)
+        if info["ok"]:
+            result = {"downloaded": False, **info}
+        elif str(settings.get("ffmpeg", {}).get("executable_path") or "").strip():
+            result = {"ok": False, "error": info.get("error")}
+        else:
+            result = ensure_prebuilt_runtime(settings)
     if result["ok"]:
         print(f"ffmpeg 就绪：{result['ffmpeg']}")
+        if result.get("package_manager"):
+            print(f"安装方式：{result['package_manager']}")
+        if result.get("brew_ffmpeg_version"):
+            print(f"brew info ffmpeg 最新版本：{result['brew_ffmpeg_version']}")
         print("编码器：" + "、".join(result.get("encoders", [])))
     else:
         print(f"失败：{result.get('error')}")

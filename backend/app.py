@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import queue
 import threading
@@ -622,6 +623,12 @@ def create_app() -> Flask:
 
         if str(settings.get("ffmpeg", {}).get("executable_path") or "").strip():
             app.logger.warning("ffmpeg 不可用：%s", info.get("error"))
+            return
+        if os.environ.get("WAVEBANK_SKIP_FFMPEG_AUTO_INSTALL") == "1":
+            app.logger.warning(
+                "ffmpeg 不可用：%s。已按启动参数跳过自动安装。",
+                info.get("error"),
+            )
             return
 
         result = ensure_prebuilt_runtime(settings)
