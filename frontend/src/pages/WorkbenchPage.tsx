@@ -59,6 +59,7 @@ export function WorkbenchPage() {
   const [agentOutputFiles, setAgentOutputFiles] = useState<TaskOutputFile[] | null>(
     null,
   );
+  const [agentActiveTaskId, setAgentActiveTaskId] = useState<string | null>(null);
   const { attachments, setLocalPaths } = useFileAttachments();
   const inputPath = attachments[0]?.path;
   const conversationId = useAgentConversationStore((state) => state.conversationId);
@@ -138,6 +139,7 @@ export function WorkbenchPage() {
         resetConversation();
         setLocalPaths([]);
         setAgentOutputFiles(null);
+        setAgentActiveTaskId(null);
       }
       setConversationLoading(false);
     } else if (activeIntent) {
@@ -173,6 +175,7 @@ export function WorkbenchPage() {
     }
     setMessages([]);
     setAgentOutputFiles(null);
+    setAgentActiveTaskId(null);
     setConversation(urlConversationId);
     setConversationLoading(true);
     const conversationFile =
@@ -332,6 +335,7 @@ export function WorkbenchPage() {
     }
     setMessages([]);
     setAgentOutputFiles(null);
+    setAgentActiveTaskId(null);
     setConversation(selectedConversationId);
     setConversationLoading(true);
     navigate(`/chat/${selectedConversationId}`);
@@ -356,6 +360,7 @@ export function WorkbenchPage() {
     setChatIntent(null);
     setLocalPaths([]);
     setAgentOutputFiles(null);
+    setAgentActiveTaskId(null);
     setAgentRefreshKey((key) => key + 1);
     navigate('/chat');
   };
@@ -368,6 +373,7 @@ export function WorkbenchPage() {
         setChatIntent(null);
         setLocalPaths([]);
         setAgentOutputFiles(null);
+        setAgentActiveTaskId(null);
         navigate('/chat');
       }
       setConversationFile(selectedConversationId, null);
@@ -378,6 +384,10 @@ export function WorkbenchPage() {
     }
   };
 
+  const handleAgentTaskStart = useCallback((taskId: string) => {
+    setAgentActiveTaskId(taskId);
+  }, []);
+
   const handleAgentTaskOutput = useCallback(
     (nextOutputFile: { path: string; ts: number }, task?: TaskRecord | null) => {
       // 人声分离等任务携带多产物：优先展示完整输出列表
@@ -387,6 +397,7 @@ export function WorkbenchPage() {
           ? taskOutputs.map((file) => ({ ...file, ts: nextOutputFile.ts }))
           : [nextOutputFile],
       );
+      setAgentActiveTaskId(null);
       const inputFile =
         (task?.params.inputFile as string | undefined) ??
         (task?.input_params?.inputFile as string | undefined);
@@ -412,7 +423,10 @@ export function WorkbenchPage() {
   return (
     <div className="workbench">
       {activeIntent !== 'batch' ? (
-        <AudioFilePanel outputs={outputFiles} />
+        <AudioFilePanel
+          outputs={outputFiles}
+          activeTaskId={activeTaskId ?? agentActiveTaskId}
+        />
       ) : null}
       {activeIntent ? (
         <ParamWindow
@@ -442,7 +456,11 @@ export function WorkbenchPage() {
             activeSubtype={null}
             onIntentResolved={handleAgentIntentResolved}
             onTaskOutput={handleAgentTaskOutput}
-            onRollback={() => setAgentOutputFiles(null)}
+            onTaskStart={handleAgentTaskStart}
+            onRollback={() => {
+              setAgentOutputFiles(null);
+              setAgentActiveTaskId(null);
+            }}
             onConversationActivity={() =>
               setAgentRefreshKey((key) => key + 1)
             }

@@ -1,14 +1,16 @@
-import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Spin, Tag, Typography } from 'antd';
 import { FileDoneOutlined } from '@ant-design/icons';
 import { getFileContentUrl } from '../../api/client';
 import { LocalFilePicker } from '../files/LocalFilePickerLazy';
 import { useFileAttachments } from '../files/FileAttachmentsContext';
 import { useTaskCacheStore, type TaskOutputFile } from '../../store/taskCache';
+import { useTaskSnapshotMap } from '../tasks/useTaskSnapshotMap';
 import { isVideoPath, pathBasename } from '../../utils/format';
 import { PanelHeader } from '../layout/PanelHeader';
 import { AudioFilePreview } from './AudioFilePreview';
 import { StyledMediaPlayer } from './StyledMediaPlayer';
+import { TaskRunPlaceholder, type TaskRunSnapshot } from './TaskRunPlaceholder';
 
 const STEM_META: Record<string, { label: string; color: string }> = {
   vocals: { label: '人声', color: 'green' },
@@ -21,11 +23,30 @@ function stemMeta(stem?: string) {
 
 export function AudioFilePanel({
   outputs,
+  activeTaskId,
 }: {
   /** 任务产物列表；人声分离携带 vocals/instrumental 双输出，其余为单输出 */
   outputs?: TaskOutputFile[] | null;
+  /** 运行中的任务 ID：存在且未完成时在输出区渲染进度占位框 */
+  activeTaskId?: string | null;
 }) {
   const { attachments, setLocalPaths } = useFileAttachments();
+  // 仅存在运行中任务时才订阅 SSE 快照通道
+  const { tasks: taskSnapshots } = useTaskSnapshotMap(Boolean(activeTaskId));
+  const runningTask = useMemo<TaskRunSnapshot | null>(() => {
+    if (!activeTaskId) {
+      return null;
+    }
+    const task = taskSnapshots[activeTaskId];
+    if (!task) {
+      // SSE 首帧未到：按排队中渲染，避免闪烁
+      return { status: 'pending', progress: 0, logs: [] };
+    }
+    if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
+      return null;
+    }
+    return task;
+  }, [activeTaskId, taskSnapshots]);
   const clearTaskInput = useTaskCacheStore((state) => state.clearInput);
   const path = attachments[0]?.path;
   const isVideo = isVideoPath(path ?? '');
@@ -96,7 +117,14 @@ export function AudioFilePanel({
           onPickFile={() => setPickerOpen(true)}
         />
       </Spin>
-      {hasOutputPanel && outputItems ? (
+      {runningTask ? (
+        <div className="audio-output-preview audio-output-preview--visible audio-output-preview--running">
+          <div className="audio-output-preview__content">
+            <TaskRunPlaceholder task={runningTask} />
+          </div>
+        </div>
+      ) : null}
+      {hasOutputPanel && outputItems && !runningTask ? (
         <div
           className={`audio-output-preview${
             outputVisible ? ' audio-output-preview--visible' : ''

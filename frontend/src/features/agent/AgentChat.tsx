@@ -48,6 +48,8 @@ interface AgentChatProps {
     outputFile: { path: string; ts: number },
     task?: TaskRecord | null,
   ) => void;
+  /** Agent 创建的后台任务进入运行态时通知外层（用于展示进度占位） */
+  onTaskStart?: (taskId: string) => void;
   /** 会话回溯后通知外层清理当前分支预览 */
   onRollback?: () => void;
 }
@@ -226,6 +228,7 @@ export function AgentChat({
   onConversationActivity,
   onConversationCreated,
   onTaskOutput,
+  onTaskStart,
   onRollback,
 }: AgentChatProps) {
   const { message: appMessage, modal } = App.useApp();
@@ -241,6 +244,7 @@ export function AgentChat({
   const taskPollersRef = useRef<Record<string, number>>({});
   const shownTaskOutputsRef = useRef<Set<string>>(new Set());
   const onTaskOutputRef = useRef(onTaskOutput);
+  const onTaskStartRef = useRef(onTaskStart);
   /** 流式出错后保留本地错误气泡，不再用服务端快照覆盖 */
   const streamErrorRef = useRef(false);
 
@@ -321,6 +325,7 @@ export function AgentChat({
     if (!taskId || shownTaskOutputsRef.current.has(taskId)) {
       return;
     }
+    onTaskStartRef.current?.(taskId);
     if (!taskPollersRef.current[taskId]) {
       taskPollersRef.current[taskId] = window.setInterval(() => {
         void pollTaskOutput(taskId, fallback);

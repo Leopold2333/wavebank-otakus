@@ -287,6 +287,105 @@
   line-height: 20px;
 }
 
+/* ---- 任务运行占位框：与输出文件容器同款矩形 ---- */
+.audio-output-preview--running {
+  /* 与“输出文件”容器（头部 33 + 播放器 60 + 内边距 24 + 间距 6）视觉等高 */
+  min-height: 123px;
+}
+
+.task-run-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-run-placeholder__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-run-placeholder__spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #b7eb8f;
+  border-top-color: #52c41a;
+  border-radius: 50%;
+  animation: task-run-placeholder-spin 0.8s linear infinite;
+}
+
+@keyframes task-run-placeholder-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.task-run-placeholder__title {
+  color: rgba(0, 0, 0, 0.88);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.task-run-placeholder__status {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.task-run-placeholder__progress {
+  margin: 0;
+}
+
+.task-run-placeholder__progress .ant-progress-text {
+  font-size: 12px;
+}
+
+/* 命令输出实时滚动框 */
+.task-run-placeholder__logs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 96px;
+  padding: 6px 10px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: rgba(82, 196, 26, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
+  font-size: 11px;
+  line-height: 18px;
+  color: rgba(0, 0, 0, 0.55);
+  scrollbar-width: thin;
+}
+
+.task-run-placeholder__log-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: task-run-placeholder-line 0.24s ease-out;
+}
+
+.task-run-placeholder__log-line--muted {
+  color: rgba(0, 0, 0, 0.3);
+}
+
+@keyframes task-run-placeholder-line {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .audio-file-preview__empty {
   display: flex;
   flex-direction: row;

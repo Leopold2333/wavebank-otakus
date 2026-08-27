@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import {
   App,
   Button,
@@ -19,10 +19,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import {
   cancelTask,
   deleteTask,
-  getTasks,
   type AudioTaskParams,
   type TaskRecord,
 } from '../api/client';
+import { useTaskSnapshotMap } from '../features/tasks/useTaskSnapshotMap';
 import { useTaskCacheStore } from '../store/taskCache';
 import { formatFileSize } from '../utils/format';
 
@@ -123,10 +123,10 @@ export function TaskCenterPage() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const removeTaskCache = useTaskCacheStore((state) => state.removeTask);
-  const [tasks, setTasks] = useState<TaskRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [live, setLive] = useState(false);
-  const liveRef = useRef(false);
+  // 与工作台占位组件共用同一快照订阅 hook（SSE + 断线降级轮询）
+  const { tasks: taskMap, live, ready } = useTaskSnapshotMap();
+  const tasks = useMemo(() => Object.values(taskMap), [taskMap]);
+  const loading = !ready;
   const activeScope = getTaskCenterScope(pathname);
 
   useEffect(() => {
@@ -140,80 +140,16 @@ export function TaskCenterPage() {
     }
   }, [activeScope, navigate, pathname]);
 
-  const load = useCallback(async () => {
-    try {
-      const response = await getTasks();
-      setTasks(response.tasks);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载任务失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [message]);
-
-  useEffect(() => {
-    void load();
-
-    let source: EventSource | null = null;
-    let retryTimer: number | undefined;
-    let retryDelay = 1000;
-
-    const connect = () => {
-      if (typeof EventSource === 'undefined') {
-        liveRef.current = false;
-        setLive(false);
-        return;
-      }
-      source = new EventSource('/api/tasks/events');
-      source.addEventListener('tasks.snapshot', (event) => {
-        try {
-          const data = JSON.parse((event as MessageEvent).data) as { tasks: TaskRecord[] };
-          setTasks(data.tasks);
-          liveRef.current = true;
-          setLive(true);
-          retryDelay = 1000;
-        } catch {
-          // 忽略无法解析的快照，等待下一帧
-        }
-      });
-      source.onerror = () => {
-        source?.close();
-        source = null;
-        liveRef.current = false;
-        setLive(false);
-        retryTimer = window.setTimeout(connect, retryDelay);
-        retryDelay = Math.min(retryDelay * 2, 30000);
-      };
-    };
-
-    connect();
-
-    // SSE 正常时以推送为准；仅在断线 fallback 模式下轮询，避免双通道重复拉取。
-    const timer = window.setInterval(() => {
-      if (!liveRef.current) {
-        void load();
-      }
-    }, 5000);
-    return () => {
-      source?.close();
-      window.clearInterval(timer);
-      if (retryTimer !== undefined) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, [load]);
-
   const handleCancel = useCallback(
     async (taskId: string) => {
       try {
         await cancelTask(taskId);
         message.success('已发送取消请求');
-        await load();
       } catch (error) {
         message.error(error instanceof Error ? error.message : '取消失败');
       }
     },
-    [load, message],
+    [message],
   );
 
   const handleDelete = useCallback(
@@ -222,12 +158,11 @@ export function TaskCenterPage() {
         await deleteTask(taskId);
         removeTaskCache(taskId);
         message.success('任务已删除');
-        await load();
       } catch (error) {
         message.error(error instanceof Error ? error.message : '删除失败');
       }
     },
-    [load, message, removeTaskCache],
+    [message, removeTaskCache],
   );
 
   const handleOpenResult = useCallback(
