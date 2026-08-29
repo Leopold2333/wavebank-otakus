@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import {
   getAgentModels,
+  getAgentConversationStatus,
   getAgentConversationMessages,
   getTask,
   rollbackAgentConversation,
@@ -171,7 +172,7 @@ function ToolCallArguments({ args }: { args?: Record<string, unknown> }) {
 }
 
 function ToolCallResult({ result }: { result?: unknown }) {
-  if (result === undefined) {
+  if (result === undefined || result === null) {
     return null;
   }
   const text =
@@ -190,6 +191,12 @@ function getToolCallSummary(call: AgentToolCall): string {
   }
   if (typeof result?.error === 'string') {
     return result.error;
+  }
+  if (call.progress) {
+    return call.progress;
+  }
+  if (result === null) {
+    return '处理中…';
   }
   const args = call.arguments ?? {};
   if (Object.keys(args).length > 0) {
@@ -242,8 +249,14 @@ export function AgentChat({
   const shownTaskOutputsRef = useRef<Set<string>>(new Set());
   const onTaskOutputRef = useRef(onTaskOutput);
   const onTaskStartRef = useRef(onTaskStart);
+  const onConversationActivityRef = useRef(onConversationActivity);
   /** 流式出错后保留本地错误气泡，不再用服务端快照覆盖 */
   const streamErrorRef = useRef(false);
+  /** 当前会话是否正在后端执行 Agent 轮次（切页回来仍可恢复展示） */
+  const [turnRunning, setTurnRunning] = useState(false);
+  /** 后端轮次结束后触发一次历史重新同步 */
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const turnRunningRef = useRef(false);
 
   const conversationId = useAgentConversationStore((state) => state.conversationId);
   const messages = useAgentConversationStore((state) => state.messages);
@@ -256,6 +269,10 @@ export function AgentChat({
   const setStreamingMessageId = useAgentConversationStore(
     (state) => state.setStreamingMessageId,
   );
+  const setStreamAbortController = useAgentConversationStore(
+    (state) => state.setStreamAbortController,
+  );
+  const abortStream = useAgentConversationStore((state) => state.abortStream);
   const conversationLoading = useAgentConversationStore(
     (state) => state.conversationLoading,
   );
@@ -355,6 +372,10 @@ export function AgentChat({
   }, [onTaskOutput]);
 
   useEffect(() => {
+    onConversationActivityRef.current = onConversationActivity;
+  }, [onConversationActivity]);
+
+  useEffect(() => {
     resetTaskOutputWatchers();
   }, [conversationId]);
 
@@ -362,10 +383,56 @@ export function AgentChat({
     () => () => {
       Object.values(taskPollersRef.current).forEach(window.clearInterval);
       taskPollersRef.current = {};
+      abortStream();
       setConversationLoading(false);
     },
-    [setConversationLoading],
+    [abortStream, setConversationLoading],
   );
+
+  // 从后端恢复“该会话是否正在执行”：
+  // 切页/刷新后如果上一轮还在后台跑，这里持续轮询；结束后重新同步一次历史。
+  useEffect(() => {
+    if (!conversationId) {
+      turnRunningRef.current = false;
+      setTurnRunning(false);
+      setConversationLoading(false);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const check = async () => {
+      try {
+        const status = await getAgentConversationStatus(conversationId);
+        if (cancelled) {
+          return;
+        }
+        const previous = turnRunningRef.current;
+        turnRunningRef.current = status.running;
+        setTurnRunning(status.running);
+        if (previous && !status.running) {
+          setHistoryVersion((version) => version + 1);
+          onConversationActivityRef.current?.();
+        }
+        if (status.running && timer === undefined) {
+          timer = window.setInterval(() => {
+            void check();
+          }, 2000);
+        } else if (!status.running && timer !== undefined) {
+          window.clearInterval(timer);
+          timer = undefined;
+        }
+      } catch {
+        // 状态接口暂时不可用时保持现状，下一轮/下次进入再恢复
+      }
+    };
+    void check();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+      }
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -394,6 +461,7 @@ export function AgentChat({
   // - 后端 404（会话已被删除）：清掉本地缓存，避免陈旧会话一直渲染。
   useEffect(() => {
     if (!conversationId) {
+      setConversationLoading(false);
       return;
     }
     if (
@@ -415,8 +483,10 @@ export function AgentChat({
     let cancelled = false;
     void (async () => {
       try {
-        const { messages: serverMessages } =
-          await getAgentConversationMessages(conversationId);
+        const [messageResponse, statusResponse] = await Promise.all([
+          getAgentConversationMessages(conversationId),
+          getAgentConversationStatus(conversationId).catch(() => null),
+        ]);
         if (cancelled) {
           return;
         }
@@ -428,14 +498,24 @@ export function AgentChat({
           setConversationLoading(false);
           return;
         }
-        const restored = serverMessages
+        const backendRunning = statusResponse?.running ?? false;
+        turnRunningRef.current = backendRunning;
+        setTurnRunning(backendRunning);
+        const restored = messageResponse.messages
           .filter((item) => item.role === 'user' || item.role === 'assistant')
           .map((item) => fromAgentMessage(item));
-        // 服务端有消息时以后端为准；服务端为空时保留本地乐观消息，
-        // 避免覆盖刚发出的尚未落库的消息。
+        const localMessages = useAgentConversationStore.getState().messages;
+        const serverIds = new Set(restored.map((message) => message.id));
+        // 后端回合仍在运行时，服务端还没有本轮 assistant 消息；
+        // 如果本地已经渲染了进行中的 assistant 占位/进度，保留本地，
+        // 避免切回会话时把“正在回复”清成只剩用户消息。
+        const hasLocalInProgressAssistant = localMessages.some(
+          (message) =>
+            message.role === 'assistant' && !serverIds.has(message.id),
+        );
         const shouldReplace =
-          restored.length > 0 ||
-          useAgentConversationStore.getState().messages.length === 0;
+          !(backendRunning && hasLocalInProgressAssistant) &&
+          (restored.length > 0 || localMessages.length === 0);
         startTransition(() => {
           if (shouldReplace) {
             setMessages(restored);
@@ -466,6 +546,7 @@ export function AgentChat({
     };
   }, [
     conversationId,
+    historyVersion,
     resetConversation,
     setConversationLoading,
     setConversationFile,
@@ -481,7 +562,12 @@ export function AgentChat({
       size,
       path,
     }));
-    if ((!text && files.length === 0) || streaming || conversationLoading) {
+    if (
+      (!text && files.length === 0) ||
+      streaming ||
+      conversationLoading ||
+      turnRunning
+    ) {
       return;
     }
 
@@ -494,6 +580,18 @@ export function AgentChat({
 
     latestStreamingMessageIdRef.current = null;
     setStreaming(true);
+    turnRunningRef.current = true;
+    setTurnRunning(true);
+    const streamController = new AbortController();
+    setStreamAbortController(streamController);
+    const clearStreamController = () => {
+      if (
+        useAgentConversationStore.getState().streamAbortController ===
+        streamController
+      ) {
+        setStreamAbortController(null);
+      }
+    };
 
     const ensureAssistantMessage = (messageId: string) => {
       const state = useAgentConversationStore.getState();
@@ -545,13 +643,43 @@ export function AgentChat({
           const state = useAgentConversationStore.getState();
           const currentToolCalls =
             state.messages.find((message) => message.id === messageId)?.toolCalls ?? [];
-          updateMessage(messageId, { toolCalls: [...currentToolCalls, toolCall] });
+          const exists = currentToolCalls.some((call) => call.id === toolCall.id);
+          const nextToolCalls = exists
+            ? currentToolCalls.map((call) =>
+                call.id === toolCall.id ? toolCall : call,
+              )
+            : [...currentToolCalls, toolCall];
+          updateMessage(messageId, { toolCalls: nextToolCalls });
           const result = getTaskToolResult(toolCall);
           if (result?.task_id) {
             watchTaskOutput(result.task_id, result);
           }
         },
+        onToolProgress: (payload) => {
+          const callId = payload.tool_call_id;
+          if (!callId) {
+            return;
+          }
+          const percent = Math.round(payload.progress ?? 0);
+          const progressText = `处理中 ${percent}%${
+            payload.stage ? ` · ${payload.stage}` : ''
+          }`;
+          const state = useAgentConversationStore.getState();
+          for (const message of state.messages) {
+            const toolCalls = message.toolCalls ?? [];
+            const index = toolCalls.findIndex((call) => call.id === callId);
+            if (index >= 0) {
+              const next = [...toolCalls];
+              next[index] = { ...next[index], progress: progressText };
+              updateMessage(message.id, { toolCalls: next });
+              return;
+            }
+          }
+        },
         onDone: (finalMessage) => {
+          clearStreamController();
+          turnRunningRef.current = false;
+          setTurnRunning(false);
           const finalToolCalls = toChatToolCalls(finalMessage.tool_calls);
           finalToolCalls?.forEach((call) => {
             const result = getTaskToolResult(call);
@@ -595,6 +723,9 @@ export function AgentChat({
           onConversationActivity?.();
         },
         onError: (error) => {
+          clearStreamController();
+          turnRunningRef.current = false;
+          setTurnRunning(false);
           const messageId = latestStreamingMessageIdRef.current ?? crypto.randomUUID();
           ensureAssistantMessage(messageId);
           streamErrorRef.current = true;
@@ -607,7 +738,17 @@ export function AgentChat({
           pendingUserMessageIdRef.current = null;
         },
       },
+      { signal: streamController.signal },
     ).catch((error: unknown) => {
+      clearStreamController();
+      const aborted = (error as { name?: string }).name === 'AbortError';
+      if (aborted) {
+        setStreamingMessageId(null);
+        setStreaming(false);
+        latestStreamingMessageIdRef.current = null;
+        pendingUserMessageIdRef.current = null;
+        return;
+      }
       const messageId = latestStreamingMessageIdRef.current ?? crypto.randomUUID();
       ensureAssistantMessage(messageId);
       streamErrorRef.current = true;
@@ -684,6 +825,7 @@ export function AgentChat({
   const canSend =
     !streaming &&
     !conversationLoading &&
+    !turnRunning &&
     (draft.trim().length > 0 || attachments.length > 0);
 
   const handleRemoveAttachment = (id: string) => {
@@ -719,6 +861,9 @@ export function AgentChat({
           <Tag>等待开启任务</Tag>
         )}
         {conversationId ? <Tag>会话 {conversationId.slice(0, 8)}…</Tag> : null}
+        {turnRunning && !streaming ? (
+          <Tag color="processing">后台处理中…</Tag>
+        ) : null}
       </div>
 
       <Spin

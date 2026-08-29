@@ -18,6 +18,8 @@ import sys
 
 _REAL_STDOUT = sys.stdout
 
+_DOWNLOAD_SOURCES = ("modelscope", "huggingface", "hf-mirror")
+
 
 def _emit(payload: dict) -> None:
     _REAL_STDOUT.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -69,13 +71,36 @@ def main() -> int:
                 )
 
             _emit({"type": "log", "message": f"开始下载模型：{model_name}"})
-            result = download_model(
-                model_name,
-                model_dir=model_dir,
-                source=download_source,
-                timeout=timeout,
-                progress_callback=progress,
-            )
+            sources = [download_source] + [
+                source
+                for source in _DOWNLOAD_SOURCES
+                if source != download_source
+            ]
+            result = None
+            last_error: Exception | None = None
+            for source in sources:
+                try:
+                    result = download_model(
+                        model_name,
+                        model_dir=model_dir,
+                        source=source,
+                        # 只有 ModelScope 主源做文件索引校验；备用源避免再次请求
+                        # 已 500 的 ModelScope API。
+                        verify=source == "modelscope",
+                        timeout=timeout,
+                        progress_callback=progress,
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001 - 需要尝试下一个下载源
+                    last_error = exc
+                    _emit(
+                        {
+                            "type": "log",
+                            "message": f"下载源 {source} 失败：{exc}",
+                        }
+                    )
+            if result is None:
+                raise last_error or RuntimeError("所有下载源均失败")
             downloaded = list(result.get("downloaded") or [])
             skipped = list(result.get("skipped") or [])
             _emit(

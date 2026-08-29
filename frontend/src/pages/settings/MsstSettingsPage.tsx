@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   App,
@@ -6,26 +6,25 @@ import {
   Collapse,
   Input,
   Popconfirm,
-  Progress,
   Space,
   Spin,
   Switch,
   Tag,
   Typography,
 } from 'antd';
-import { DownloadOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import {
-  cancelMsstDownload,
-  getMsstCatalog,
-  getMsstDownloads,
   removeMsstModel,
-  startMsstDownload,
   type MsstCatalogCategory,
-  type MsstCatalogResponse,
   type MsstDownloadState,
   type MsstModelInfo,
 } from '../../api/client';
 import { formatFileSize } from '../../utils/format';
+import {
+  ModelDownloadActions,
+  ModelDownloadProgress,
+} from '../../features/msst/ModelDownloadControls';
+import { useMsstModelLibrary } from '../../features/msst/useMsstModelLibrary';
 
 function formatModelName(name: string) {
   return name.replace(/\.(ckpt|th|pt|yaml)$/i, '');
@@ -52,7 +51,6 @@ function ModelRow({
   const isDownloaded = model.downloaded || status === 'done';
   const isDownloading = status === 'downloading';
   const isCancelled = status === 'cancelled';
-  const progress = download?.progress ?? 0;
 
   return (
     <div className="msst-model-row">
@@ -89,19 +87,10 @@ function ModelRow({
         >
           {model.description || '暂无简介（待补充）'}
         </Typography.Text>
-        {isDownloading ? (
-          <div className="msst-model-row__progress">
-            <Progress
-              percent={Math.round(progress)}
-              size="small"
-              format={() => `${Math.round(progress)}%`}
-              style={{ maxWidth: 360 }}
-            />
-            {download?.stage ? (
-              <Typography.Text type="secondary">{download.stage}</Typography.Text>
-            ) : null}
-          </div>
-        ) : null}
+        <ModelDownloadProgress
+          download={download}
+          className="msst-model-row__progress"
+        />
         {status === 'error' ? (
           <Alert type="error" showIcon message={download?.message ?? '下载失败'} />
         ) : null}
@@ -114,16 +103,7 @@ function ModelRow({
         ) : null}
       </div>
       <div className="msst-model-row__actions">
-        {isDownloading ? (
-          <Space>
-            <Button disabled icon={<DownloadOutlined />}>
-              下载中 {Math.round(progress)}%
-            </Button>
-            <Button danger onClick={() => onCancel(model)}>
-              取消下载
-            </Button>
-          </Space>
-        ) : isDownloaded ? (
+        {isDownloaded ? (
           <Popconfirm
             title="移除模型"
             description="会删除该模型在本地的全部缓存文件。"
@@ -135,9 +115,13 @@ function ModelRow({
             <Button danger>移除</Button>
           </Popconfirm>
         ) : (
-          <Button icon={<DownloadOutlined />} onClick={() => onDownload(model)}>
-            下载
-          </Button>
+          <ModelDownloadActions
+            model={model}
+            download={download}
+            onDownload={onDownload}
+            onCancel={onCancel}
+            buttonLabel="下载"
+          />
         )}
       </div>
     </div>
@@ -227,65 +211,20 @@ function ModelCategoryBrowser({
 
 export function MsstSettingsPage() {
   const { message } = App.useApp();
-  const [catalog, setCatalog] = useState<MsstCatalogResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadingError, setLoadingError] = useState('');
-  const [downloads, setDownloads] = useState<Record<string, MsstDownloadState>>({});
-
-  const loadCatalog = useCallback(async () => {
-    try {
-      const response = await getMsstCatalog();
-      setCatalog(response);
-      setLoadingError('');
-    } catch (error) {
-      setLoadingError(error instanceof Error ? error.message : '加载模型库失败');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const refreshDownloads = useCallback(async () => {
-    try {
-      const response = await getMsstDownloads();
-      setDownloads(
-        Object.fromEntries(
-          response.downloads.map((item) => [item.modelName, item]),
-        ),
-      );
-      return response.downloads;
-    } catch {
-      return [];
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCatalog();
-    void refreshDownloads();
-  }, [loadCatalog, refreshDownloads]);
-
-  const activeDownloading = useMemo(
-    () => Object.values(downloads).some((item) => item.status === 'downloading'),
-    [downloads],
-  );
-
-  useEffect(() => {
-    if (!activeDownloading) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void refreshDownloads().then((list) => {
-        if (list.some((item) => item.status === 'done')) {
-          void loadCatalog();
-        }
-      });
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [activeDownloading, refreshDownloads, loadCatalog]);
+  const {
+    catalog,
+    catalogError: loadingError,
+    catalogLoading: loading,
+    downloads,
+    loadCatalog,
+    refreshDownloads,
+    startDownload,
+    cancelDownload,
+  } = useMsstModelLibrary();
 
   const handleDownload = async (model: MsstModelInfo) => {
     try {
-      await startMsstDownload(model.name);
-      await refreshDownloads();
+      await startDownload(model);
       message.open({
         type: 'success',
         content: `已开始下载 ${formatModelName(model.name)}`,
@@ -304,9 +243,7 @@ export function MsstSettingsPage() {
 
   const handleCancel = async (model: MsstModelInfo) => {
     try {
-      const result = await cancelMsstDownload(model.name);
-      await refreshDownloads();
-      await loadCatalog();
+      const result = await cancelDownload(model);
       message.open({
         type: 'info',
         content: `已取消下载 ${formatModelName(model.name)}${

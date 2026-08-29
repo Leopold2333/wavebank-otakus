@@ -9,7 +9,7 @@ import {
 interface AgentConversationSidebarProps {
   activeConversationId: string | null;
   refreshKey: number;
-  /** 流式输出期间禁用切换/删除会话 */
+  /** 切换会话的加载期间禁用操作；流式输出期间允许切换（会自动中断当前监听） */
   disabled?: boolean;
   onSelect: (conversationId: string) => void;
   onNewConversation: () => void;
@@ -128,6 +128,11 @@ export function AgentConversationSidebar({
                     <span className="agent-conversations__item-id">
                       {conversation.id}
                     </span>
+                    {conversation.running ? (
+                      <span className="agent-conversations__item-running">
+                        处理中
+                      </span>
+                    ) : null}
                     <span className="agent-conversations__item-time">
                       {formatConversationTime(conversation.updated_at)}
                     </span>

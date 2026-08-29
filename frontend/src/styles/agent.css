@@ -166,6 +166,16 @@
   color: rgba(0, 0, 0, 0.45);
 }
 
+.agent-conversations__item-running {
+  align-self: flex-start;
+  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: #0958d9;
+  background: #e6f4ff;
+  border-radius: 999px;
+}
+
 .agent-chat__header {
   display: flex;
   align-items: center;

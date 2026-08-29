@@ -2,6 +2,7 @@ import {
   Alert,
   App,
   Button,
+  Checkbox,
   Divider,
   Form,
   Input,
@@ -12,10 +13,8 @@ import {
 } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   createAudioTask,
-  getMsstModels,
   type AudioTaskParams,
   type MsstModelInfo,
 } from '../../api/client';
@@ -34,11 +33,40 @@ import {
   taskTypeForIntent,
   type AudioSubtypeId,
 } from './audioSubtypes';
-import { INTENT_MAP, type IntentField } from './intentRegistry';
+import { INTENT_MAP, type IntentField, type IntentFieldOption } from './intentRegistry';
 import { isVideoPath } from '../../utils/format';
+import { ModelDownloadProgress } from '../msst/ModelDownloadControls';
+import { useMsstModelLibrary } from '../msst/useMsstModelLibrary';
+import { SeparationModelPicker } from './SeparationModelPicker';
 
-/** 人声分离中支持展示“模型推荐值”的高级参数（数字输入型） */
+/** 人声分离中会被模型 YAML 推荐值填充的高级参数（数字输入型） */
 const MSST_DEFAULT_VALUE_FIELDS = new Set(['batchSize', 'overlapSize', 'chunkSize']);
+
+function stemOptionsFromModel(model: MsstModelInfo | null): IntentFieldOption[] {
+  const instruments = model?.config?.instruments;
+  const rawStems =
+    instruments && instruments.length > 0
+      ? instruments
+      : String(model?.targetStem ?? '')
+          .split(/[/,]/)
+          .map((item) => item.trim())
+          .filter(Boolean);
+  const seen = new Set<string>();
+  const options: IntentFieldOption[] = [];
+  for (const stem of rawStems) {
+    const value = String(stem).trim().toLowerCase();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    options.push({
+      label: value,
+      value,
+      searchText: String(stem).trim(),
+    });
+  }
+  return options;
+}
 
 function FieldItem({
   field,
@@ -54,7 +82,9 @@ function FieldItem({
     label: field.label,
     tooltip: field.tooltip,
   };
-  const fillStyle = fill ? { width: '100%', maxWidth: 240 } : undefined;
+  const fillStyle = fill
+    ? { width: '100%', maxWidth: field.multiple ? 360 : 240 }
+    : undefined;
 
   if (field.type === 'select') {
     return (
@@ -63,6 +93,7 @@ function FieldItem({
           disabled={disabled || field.disabled}
           options={field.options}
           placeholder={field.placeholder}
+          mode={field.multiple ? 'multiple' : undefined}
           showSearch
           filterOption={(input, option) => {
             const raw = option as unknown as Record<string, unknown>;
@@ -150,8 +181,12 @@ export function IntentConfigPanel({
   const speedValue = Form.useWatch('speed', form);
   const pitchValue = Form.useWatch('pitchSemitones', form);
   const outputFormat = Form.useWatch('outputFormat', form);
-  const modelNameValue = Form.useWatch('modelName', form);
+  const modelNameValue = Form.useWatch('modelName', { form, preserve: true });
   const pitchAutoRef = useRef(true);
+  const previousStemModelRef = useRef<string | null>(null);
+  const skipStemModelRef = useRef<string | null>(null);
+  const previousDefaultsModelRef = useRef<string | null>(null);
+  const skipDefaultsModelRef = useRef<string | null>(null);
   const applyingAutoPitchRef = useRef(false);
   const submitModeRef = useRef<'new' | 'rebuild'>('new');
   const [submittingMode, setSubmittingMode] = useState<'new' | 'rebuild' | null>(null);
@@ -228,122 +263,117 @@ export function IntentConfigPanel({
   );
   const upsertTask = useTaskCacheStore((state) => state.upsertTask);
 
-  // 人声分离：从后端拉取 pymss 支持的模型清单填充下拉框
-  const [msstModels, setMsstModels] = useState<MsstModelInfo[] | null>(null);
-  const navigate = useNavigate();
-  const availableMsstModels = useMemo(
-    () => (msstModels ?? []).filter((model) => model.downloaded),
-    [msstModels],
-  );
-  const hasAvailableMsstModels =
-    msstModels !== null && availableMsstModels.length > 0;
-  const msstModelOptions = useMemo(
+  // 人声分离：全量 pymss catalog + 下载状态（与设置页共用同一套下载管理）
+  const {
+    catalog: msstCatalog,
+    catalogError: msstCatalogError,
+    downloads: msstDownloads,
+    startDownload: startMsstDownloadAction,
+    cancelDownload: cancelMsstDownloadAction,
+  } = useMsstModelLibrary(isSeparation);
+  const msstDeviceOptions = useMemo(
     () =>
-      availableMsstModels.map((model) => ({
-        label: model.name.replace(/\.(ckpt|th|pt|yaml)$/i, ''),
-        value: model.name,
-        searchText: [
-          model.name,
-          ...(model.aliases ?? []),
-          model.architecture,
-          model.primaryCategoryCn,
-          model.secondaryCategoryCn,
-        ]
-          .filter(Boolean)
-          .join(' '),
+      (msstCatalog?.devices ?? []).map((device) => ({
+        ...device,
+        disabled: device.available === false,
       })),
-    [availableMsstModels],
+    [msstCatalog],
   );
-  const msstModelTooltip = useMemo(() => {
-    if (msstModels === null) {
-      return '正在加载模型列表…';
+  const allMsstModels = useMemo(() => msstCatalog?.models ?? [], [msstCatalog]);
+  const currentMsstModel = useMemo(
+    () => allMsstModels.find((model) => model.name === modelNameValue) ?? null,
+    [allMsstModels, modelNameValue],
+  );
+  const currentMsstDownload = currentMsstModel
+    ? msstDownloads[currentMsstModel.name]
+    : undefined;
+  const isMsstModelDownloaded = Boolean(
+    currentMsstModel?.downloaded || currentMsstDownload?.status === 'done',
+  );
+  const isSeparationModelReady = Boolean(
+    currentMsstModel && isMsstModelDownloaded,
+  );
+  const selectedStemOptions = useMemo(
+    () => stemOptionsFromModel(currentMsstModel),
+    [currentMsstModel],
+  );
+  const handleStartMsstDownload = async (model: MsstModelInfo) => {
+    try {
+      await startMsstDownloadAction(model);
+      message.success(`已开始下载 ${model.name}`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '开始下载失败');
     }
-    const settingsLink = (
-      <a
-        href="/settings/msst"
-        onClick={(event) => {
-          event.preventDefault();
-          navigate('/settings/msst');
-        }}
-      >
-        设置页
-      </a>
-    );
-    return hasAvailableMsstModels ? (
-      <>不同的模型在处理复杂音频时差异较大，可前往{settingsLink}阅读模型能力简介。</>
-    ) : (
-      <>还没有可用模型捏，请前往{settingsLink}下载人声/伴奏双向分离类模型。</>
-    );
-  }, [msstModels, hasAvailableMsstModels, navigate]);
+  };
+  const handleCancelMsstDownload = async (model: MsstModelInfo) => {
+    try {
+      const result = await cancelMsstDownloadAction(model);
+      message.info(
+        `已取消下载 ${model.name}${
+          result.cleaned?.length
+            ? `，并清理 ${result.cleaned.length} 个残留文件`
+            : '，并清理残留缓存'
+        }`,
+      );
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '取消失败');
+    }
+  };
+  const handleSeparationModelChange = useCallback(
+    (name?: string) => {
+      form.setFieldValue('modelName', name ?? undefined);
+    },
+    [form],
+  );
   useEffect(() => {
-    if (!isSeparation) {
+    if (!isSeparation || selectedStemOptions.length === 0) {
       return;
     }
-    let cancelled = false;
-    getMsstModels()
-      .then((response) => {
-        if (cancelled) {
-          return;
-        }
-        setMsstModels(response.models);
-        const downloaded = response.models.filter((model) => model.downloaded);
-        if (downloaded.length > 0) {
-          const current = form.getFieldValue('modelName') as string | undefined;
-          const known = new Set(downloaded.map((model) => model.name));
-          if (!current || !known.has(current)) {
-            form.setFieldValue(
-              'modelName',
-              known.has(response.defaultModel)
-                ? response.defaultModel
-                : downloaded[0].name,
-            );
-          }
-        } else {
-          form.setFieldValue('modelName', undefined);
-        }
-      })
-      .catch(() => {
-        // 拉取失败时保留注册表中的默认选项
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [form, isSeparation]);
+    const current = form.getFieldValue('selectedStems');
+    const valid = new Set(selectedStemOptions.map((option) => String(option.value)));
+    const existing = Array.isArray(current)
+      ? current.filter((value) => valid.has(String(value)))
+      : [];
+    const modelChanged = previousStemModelRef.current !== modelNameValue;
+    if (modelChanged) {
+      previousStemModelRef.current = modelNameValue;
+      const restoreStems = skipStemModelRef.current === modelNameValue;
+      skipStemModelRef.current = null;
+      const next =
+        restoreStems && existing.length > 0
+          ? existing
+          : selectedStemOptions.map((option) => option.value);
+      if (next.length !== (Array.isArray(current) ? current.length : -1)) {
+        form.setFieldValue('selectedStems', next);
+      }
+      return;
+    }
+    if (!Array.isArray(current) || current.length === 0) {
+      form.setFieldValue(
+        'selectedStems',
+        selectedStemOptions.map((option) => option.value),
+      );
+    }
+  }, [isSeparation, modelNameValue, selectedStemOptions, form]);
 
   const resolveField = useCallback(
     (field: IntentField): IntentField => {
-      if (!isSeparation || field.name !== 'modelName') {
+      if (!isSeparation) {
         return field;
       }
-      if (msstModels === null) {
-        return field;
+      if (field.name === 'device' && msstCatalog?.devices) {
+        return { ...field, options: msstDeviceOptions };
       }
-      if (!hasAvailableMsstModels) {
-        return {
-          ...field,
-          options: [],
-          placeholder: '暂无已下载模型，请前往设置页下载',
-          disabled: true,
-          tooltip: msstModelTooltip,
-        };
-      }
-      return { ...field, options: msstModelOptions, tooltip: msstModelTooltip };
+      return field;
     },
     [
       isSeparation,
-      msstModels,
-      hasAvailableMsstModels,
-      msstModelOptions,
-      msstModelTooltip,
+      msstDeviceOptions,
+      msstCatalog,
     ],
   );
 
-  const currentMsstModel = useMemo(
-    () => availableMsstModels.find((model) => model.name === modelNameValue) ?? null,
-    [availableMsstModels, modelNameValue],
-  );
-
-  // 高级推理参数：在 tooltip 中展示当前模型 YAML 的推荐默认值
+  // 高级推理参数：只处理架构不支持时的禁用；tooltip 始终展示字段描述
   const resolveAdvancedField = useCallback(
     (field: IntentField): IntentField => {
       if (
@@ -357,29 +387,40 @@ export function IntentConfigPanel({
         field.name as 'batchSize' | 'overlapSize' | 'chunkSize'
       ];
       if (capability === false) {
-        return {
-          ...field,
-          disabled: true,
-          tooltip: '该模型不使用此参数，将沿用模型配置',
-        };
-      }
-      const defaults = currentMsstModel?.defaultInferenceParams;
-      const defaultValue = defaults?.[
-        field.name as 'batchSize' | 'overlapSize' | 'chunkSize'
-      ];
-      if (defaultValue != null) {
-        return { ...field, tooltip: `留空使用模型推荐值: ${defaultValue.toLocaleString()}` };
-      }
-      if (currentMsstModel && currentMsstModel.downloaded === false) {
-        return {
-          ...field,
-          tooltip: '留空使用模型推荐值: 待模型下载后显示',
-        };
+        return { ...field, disabled: true };
       }
       return field;
     },
     [isSeparation, currentMsstModel],
   );
+
+  // 选择模型后把模型 YAML 的推荐推理参数直接写进输入框
+  useEffect(() => {
+    if (!isSeparation || !currentMsstModel || !modelNameValue) {
+      return;
+    }
+    const pendingSkipModel = skipDefaultsModelRef.current;
+    skipDefaultsModelRef.current = null;
+    if (pendingSkipModel === modelNameValue) {
+      previousDefaultsModelRef.current = modelNameValue;
+      return;
+    }
+    if (previousDefaultsModelRef.current === modelNameValue) {
+      return;
+    }
+    previousDefaultsModelRef.current = modelNameValue;
+    const defaults: Partial<
+      Record<'batchSize' | 'overlapSize' | 'chunkSize', number>
+    > = currentMsstModel.defaultInferenceParams ?? {};
+    for (const key of ['batchSize', 'overlapSize', 'chunkSize'] as const) {
+      if (currentMsstModel.paramCapabilities?.[key] === false) {
+        form.setFieldValue(key, undefined);
+        continue;
+      }
+      const value = defaults[key];
+      form.setFieldValue(key, value != null && value > 0 ? value : undefined);
+    }
+  }, [isSeparation, currentMsstModel, modelNameValue, form]);
 
   const initialValues = useMemo(
     () =>
@@ -404,6 +445,21 @@ export function IntentConfigPanel({
         applyingAutoPitchRef.current = true;
         form.setFieldsValue(patch);
         applyingAutoPitchRef.current = false;
+        let hasAdvancedDefaults = false;
+        for (const key of MSST_DEFAULT_VALUE_FIELDS) {
+          if (key in patch) {
+            hasAdvancedDefaults = true;
+            break;
+          }
+        }
+        if (hasAdvancedDefaults) {
+          skipDefaultsModelRef.current =
+            (form.getFieldValue('modelName') as string | undefined) ?? null;
+        }
+        if ('selectedStems' in patch) {
+          skipStemModelRef.current =
+            (form.getFieldValue('modelName') as string | undefined) ?? null;
+        }
       }
       if (options?.manualPitch && patch.pitchSemitones !== undefined) {
         pitchAutoRef.current = false;
@@ -604,84 +660,146 @@ export function IntentConfigPanel({
         ) : (
           <>
             {isSeparation ? (
-              <Alert
-                type="info"
-                showIcon
-                title="输出固定为人声 + 伴奏两条音轨"
-                description="产物文件名自动追加 _vocals / _instrumental 后缀；只有已下载的模型会出现在下方列表中。"
-                style={{ marginBottom: 12 }}
-              />
-            ) : null}
-            {isSeparation ? <Divider plain>模型选择</Divider> : null}
-            {nonAudioInputFields.length > 0 ? (
-              <div className="audio-param-fields">
-                {nonAudioInputFields.map((field) => (
-                  <FieldItem key={field.name} field={resolveField(field)} fill />
-                ))}
-              </div>
-            ) : null}
-            {isSeparation && msstModels !== null && !hasAvailableMsstModels ? (
-              <Alert
-                type="info"
-                showIcon
-                title="还没有可用模型"
-                description={
+              <>
+                <Divider plain>分离参数</Divider>
+                {msstCatalogError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message={msstCatalogError}
+                    style={{ marginBottom: 12 }}
+                  />
+                ) : null}
+                <SeparationModelPicker
+                  catalog={msstCatalog}
+                  modelName={modelNameValue}
+                  downloads={msstDownloads}
+                  onModelChange={handleSeparationModelChange}
+                  onDownload={handleStartMsstDownload}
+                  onCancel={handleCancelMsstDownload}
+                />
+                {currentMsstModel && !isMsstModelDownloaded ? (
+                  <ModelDownloadProgress
+                    download={currentMsstDownload}
+                    className="separation-download-progress"
+                  />
+                ) : null}
+                {currentMsstModel && currentMsstDownload?.status === 'error' ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message={currentMsstDownload.message ?? '下载失败'}
+                    style={{ marginBottom: 12 }}
+                  />
+                ) : null}
+                {isSeparationModelReady ? (
                   <>
-                    请前往{' '}
-                    <a
-                      href="/settings/msst"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        navigate('/settings/msst');
-                      }}
-                    >
-                      设置页
-                    </a>{' '}
-                    下载人声/伴奏双向分离类模型后再回来。
+                    <Divider plain>输出参数</Divider>
+                    <div className="audio-param-fields">
+                      {[
+                        ...nonAudioInputFields
+                          .filter((field) => field.name === 'device')
+                          .map((field) => resolveField(field)),
+                        ...nonAudioOutputFields,
+                      ].map((field) => (
+                        <FieldItem key={field.name} field={field} fill />
+                      ))}
+                    </div>
+                    <div className="separation-stem-field">
+                      <Form.Item
+                        name="selectedStems"
+                        label="输出音轨"
+                        tooltip="默认勾选全部；取消勾选可只输出个别音轨"
+                        extra={
+                          selectedStemOptions.length === 0
+                            ? '该模型暂无音轨清单'
+                            : '取消勾选可只输出个别音轨'
+                        }
+                      >
+                        <Checkbox.Group
+                          disabled={selectedStemOptions.length === 0}
+                          options={selectedStemOptions.map((option) => ({
+                            label: option.label,
+                            value: option.value,
+                          }))}
+                        />
+                      </Form.Item>
+                    </div>
+                    {currentMsstModel?.paramCapabilities?.chunkSize === false ? (
+                      <Alert
+                        type="info"
+                        showIcon
+                        title="当前模型为 Demucs 系普通模型"
+                        description="batchSize / overlapSize 仍可调整；chunkSize 不生效，将沿用模型配置。"
+                        style={{ marginBottom: 12 }}
+                      />
+                    ) : null}
+                    {nonAudioAdvancedFields.length > 0 ? (
+                      <>
+                        <Divider plain>高级推理参数（留空使用模型默认）</Divider>
+                        <div className="audio-param-fields">
+                          {nonAudioAdvancedFields.map((field) => (
+                            <FieldItem
+                              key={field.name}
+                              field={resolveAdvancedField(field)}
+                              fill
+                            />
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                    {attachments.length > 1 ? (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        title="当前仅支持单个文件"
+                        description="人声分离严格只处理单个文件，将使用第一个已添加文件。"
+                        style={{ marginBottom: 12 }}
+                      />
+                    ) : null}
                   </>
-                }
-                style={{ marginBottom: 12 }}
-              />
-            ) : null}
-            {isSeparation &&
-            currentMsstModel?.paramCapabilities?.chunkSize === false ? (
-              <Alert
-                type="info"
-                showIcon
-                title="当前模型为 Demucs 系普通模型"
-                description="batchSize / overlapSize 仍可调整；chunkSize 不生效，将沿用模型配置。"
-                style={{ marginBottom: 12 }}
-              />
-            ) : null}
-            {nonAudioAdvancedFields.length > 0 ? (
-              <>
-                <Divider plain>高级推理参数（留空使用模型默认）</Divider>
-                <div className="audio-param-fields">
-                  {nonAudioAdvancedFields.map((field) => (
-                    <FieldItem key={field.name} field={resolveAdvancedField(field)} fill />
-                  ))}
-                </div>
+                ) : null}
               </>
-            ) : null}
-            {attachments.length > 1 ? (
-              <Alert
-                type="warning"
-                showIcon
-                title="当前仅支持单个文件"
-                description="人声分离严格只处理单个文件，将使用第一个已添加文件。"
-                style={{ marginBottom: 12 }}
-              />
-            ) : null}
-            {nonAudioOutputFields.length > 0 ? (
+            ) : (
               <>
-                <Divider plain>输出参数</Divider>
-                <div className="audio-output-grid">
-                  {nonAudioOutputFields.map((field) => (
-                    <FieldItem key={field.name} field={field} fill />
-                  ))}
-                </div>
+                {nonAudioInputFields.length > 0 ? (
+                  <div className="audio-param-fields">
+                    {nonAudioInputFields.map((field) => (
+                      <FieldItem key={field.name} field={resolveField(field)} fill />
+                    ))}
+                  </div>
+                ) : null}
+                {nonAudioAdvancedFields.length > 0 ? (
+                  <>
+                    <Divider plain>高级推理参数（留空使用模型默认）</Divider>
+                    <div className="audio-param-fields">
+                      {nonAudioAdvancedFields.map((field) => (
+                        <FieldItem key={field.name} field={field} fill />
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+                {attachments.length > 1 ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    title="当前仅支持单个文件"
+                    description="当前功能严格只处理单个文件，将使用第一个已添加文件。"
+                    style={{ marginBottom: 12 }}
+                  />
+                ) : null}
+                {nonAudioOutputFields.length > 0 ? (
+                  <>
+                    <Divider plain>输出参数</Divider>
+                    <div className="audio-output-grid">
+                      {nonAudioOutputFields.map((field) => (
+                        <FieldItem key={field.name} field={field} fill />
+                      ))}
+                    </div>
+                  </>
+                ) : null}
               </>
-            ) : null}
+            )}
           </>
         )}
         <Form.Item>
@@ -709,7 +827,11 @@ export function IntentConfigPanel({
               icon={<PlusOutlined />}
               htmlType="submit"
               loading={submittingMode === 'new' || (taskPending && taskPendingMode === 'new')}
-              disabled={taskPending || !isTaskIntent}
+              disabled={
+                taskPending ||
+                !isTaskIntent ||
+                (isSeparation && !isSeparationModelReady)
+              }
               onClick={() => {
                 submitModeRef.current = 'new';
               }}

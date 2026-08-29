@@ -26,6 +26,11 @@ import yaml
 # pymss 中“人声/伴奏双向分离”模型的二级分类；人声分离页专用
 VOCAL_SEPARATION_CATEGORY = "vocal_instrumental_dual"
 
+# 少数分类的默认模型有明确更合适的候选；未覆盖的分类取该小类第一个模型。
+DEFAULT_MODEL_OVERRIDES: dict[str, str] = {
+    "vocal_instrumental_dual": "MDX23C-8KFFT-InstVoc_HQ.ckpt",
+}
+
 _CATALOG_TTL_SECONDS = 300
 _CACHE: dict[str, Any] = {"at": 0.0, "model_dir": None, "catalog": None}
 
@@ -167,7 +172,8 @@ def _read_model_config(
         return None
     try:
         with config_path.open(encoding="utf-8") as handle:
-            raw = yaml.safe_load(handle) or {}
+            # FullLoader 兼容 pymss 模型配置里的 !!python/tuple（safe_load 会拒绝）
+            raw = yaml.load(handle, Loader=yaml.FullLoader) or {}
     except (OSError, yaml.YAMLError):
         return None
     if not isinstance(raw, dict):
@@ -275,6 +281,17 @@ def model_config_info(
         str(model.get("configRelpath") or ""),
         model_dir,
     )
+
+
+def default_model_for_models(
+    secondary_category: str,
+    models: list[dict[str, Any]],
+) -> str:
+    """Pick the default model for one secondary category."""
+    override = DEFAULT_MODEL_OVERRIDES.get(secondary_category)
+    if override and any(str(model["name"]) == override for model in models):
+        return override
+    return str(models[0]["name"]) if models else ""
 
 
 def _group_categories(models: list[dict[str, Any]]) -> list[dict[str, Any]]:

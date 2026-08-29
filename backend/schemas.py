@@ -122,8 +122,8 @@ MSST_OUTPUT_FILE_NAME_FIELD: dict[str, Any] = {
     "type": "text",
 }
 
-# 人声分离不走 ffmpeg，公共输出字段只有格式与文件名；产物固定追加
-# _vocals / _instrumental 后缀并输出两条音轨。
+# 人声分离不走 ffmpeg，公共输出字段只有格式与文件名；产物按模型音轨追加
+# _vocals / _instrumental / _bass 等后缀，输出数量由模型与 selectedStems 决定。
 MSST_COMMON_OUTPUT_FIELDS: list[dict[str, Any]] = [
     MSST_OUTPUT_FORMAT_FIELD,
     MSST_OUTPUT_FILE_NAME_FIELD,
@@ -236,7 +236,7 @@ AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
         "intent": "audio",
         "title": "人声分离",
         "agent": "media_agent",
-        "description": "使用 MSST 模型把音频分离为人声与伴奏两条音轨",
+        "description": "使用 MSST 模型把音频分离为模型支持的一条或多条音轨",
         "fields": [
             INPUT_FILE_FIELD,
             {
@@ -244,24 +244,8 @@ AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
                 "label": "分离模型",
                 "type": "select",
                 "defaultValue": "MDX23C-8KFFT-InstVoc_HQ.ckpt",
-                "options": [
-                    {
-                        "label": "MDX23C-8KFFT-InstVoc_HQ（默认）",
-                        "value": "MDX23C-8KFFT-InstVoc_HQ.ckpt",
-                    },
-                    {
-                        "label": "MDX23C-8KFFT-InstVoc_HQ_2",
-                        "value": "MDX23C-8KFFT-InstVoc_HQ_2.ckpt",
-                    },
-                    {
-                        "label": "MDX23C_D1581（轻量）",
-                        "value": "MDX23C_D1581.ckpt",
-                    },
-                    {
-                        "label": "melband_roformer_inst_v2",
-                        "value": "melband_roformer_inst_v2.ckpt",
-                    },
-                ],
+                "options": [],
+                "tooltip": "从 list_msst_models 获取分类与默认模型；未指定时使用默认模型",
             },
             {
                 "name": "device",
@@ -275,6 +259,13 @@ AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
                     {"label": "MPS", "value": "mps"},
                     {"label": "MLX", "value": "mlx"},
                 ],
+            },
+            {
+                "name": "selectedStems",
+                "label": "输出音轨",
+                "type": "select",
+                "multiple": True,
+                "tooltip": "留空默认输出模型全部音轨；可只选择个别音轨",
             },
         ],
         "advancedFields": [
@@ -292,25 +283,25 @@ AUDIO_SUBTYPE_SCHEMAS: dict[str, dict[str, Any]] = {
                 "min": 1,
                 "max": 16777216,
                 "placeholder": "模型默认",
-                "tooltip": "留空使用模型推荐值；增大可提速但占用更多内存",
+                "tooltip": "增大批大小会占用更多显存；在显存未占满前，通常可加快处理速度。",
             },
             {
                 "name": "overlapSize",
-                "label": "分块重叠（采样数）",
+                "label": "窗口重叠长度（采样数）",
                 "type": "number",
                 "min": 1,
                 "max": 16777216,
                 "placeholder": "模型默认",
-                "tooltip": "留空使用模型推荐值；增大可减少分块接缝伪影，但更耗时",
+                "tooltip": "重叠越短，处理越快，但音轨边界可能更粗糙；重叠越长，效果越细腻，但耗时更久。",
             },
             {
                 "name": "chunkSize",
-                "label": "分块大小（采样数）",
+                "label": "分切片大小（采样数）",
                 "type": "number",
                 "min": 1,
                 "max": 16777216,
                 "placeholder": "模型默认",
-                "tooltip": "留空使用模型推荐值；调整不当可能降低质量或耗尽内存",
+                "tooltip": "单个窗口的时间帧数（=采样率 × 秒数）。数值越大分离效果通常越好，但处理更慢、显存占用更高。",
             },
             {
                 "name": "standardize",

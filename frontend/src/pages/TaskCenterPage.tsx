@@ -102,7 +102,7 @@ function formatParams(params: AudioTaskParams, taskType?: string) {
     params.useTta ? 'TTA' : '',
     params.batchSize != null ? `批 ${params.batchSize}` : '',
     params.overlapSize != null ? `重叠 ${params.overlapSize}` : '',
-    params.chunkSize != null ? `分块 ${params.chunkSize}` : '',
+    params.chunkSize != null ? `切片 ${params.chunkSize}` : '',
     params.standardize ? '输入标准化' : '',
     params.normalize ? '输出归一化' : '',
   ].filter(Boolean);
@@ -171,7 +171,8 @@ export function TaskCenterPage() {
         message.info('该任务类型暂不支持直接进入结果');
         return;
       }
-      if (task.type === 'audio.vocal_separation') {
+      const hasStemOutputs = (task.outputs ?? []).some((output) => output.stem);
+      if (task.type === 'audio.vocal_separation' || hasStemOutputs) {
         const separationOutput = task.target_path || task.outputs[0]?.path;
         if (!separationOutput) {
           message.warning('该任务没有可用的输出文件');

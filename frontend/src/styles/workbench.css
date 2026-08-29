@@ -148,6 +148,69 @@
   min-width: 0;
 }
 
+.separation-stem-field {
+  margin-bottom: 16px;
+}
+
+.separation-model-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.separation-model-picker__cascader,
+.separation-model-picker .ant-cascader {
+  flex: 0 1 240px;
+  min-width: 0;
+  max-width: 240px;
+}
+
+.separation-model-picker__cascader .ant-select-selector {
+  width: 100%;
+}
+
+.separation-model-picker__action {
+  flex: 0 0 240px;
+  width: 240px;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+.msst-model-option--undownloaded {
+  color: rgba(0, 0, 0, 0.28);
+}
+
+.separation-download-progress {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 16px;
+}
+
+.separation-download-progress .ant-progress {
+  flex: 1;
+  margin: 0;
+}
+
+.separation-download-progress__stage {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.separation-stem-field .ant-form-item {
+  margin-bottom: 8px;
+}
+
+.separation-stem-field .ant-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
 .audio-file-preview {
   padding: 12px 16px;
   background: #fafafa;
@@ -245,50 +308,41 @@
 }
 
 .audio-output-preview__name {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 260px;
   color: rgba(0, 0, 0, 0.65);
   font-size: 13px;
 }
 
-/* 多 stem（人声分离）输出：一行并排两个播放器 */
+.audio-output-preview__header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.audio-output-preview__select {
+  min-width: 120px;
+  max-width: 260px;
+  flex: none;
+}
+
+/* 多 stem（人声分离）输出：下拉切换，单个播放器 */
 .audio-output-preview__players {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
-.audio-output-preview__players--grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-@media (max-width: 720px) {
-  .audio-output-preview__players--grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .audio-output-preview__player {
-  min-width: 0;
-}
-
-.audio-output-preview__stem {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
   min-width: 0;
 }
 
 .audio-output-preview__stem-tag {
   flex: none;
   margin-inline-end: 0;
-}
-
-.audio-output-preview__stem-name {
-  min-width: 0;
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
-  line-height: 20px;
 }
 
 /* ---- 任务运行占位框：与输出文件容器同款矩形 ---- */
@@ -450,11 +504,10 @@
 }
 
 .audio-file-preview__header-name {
-  max-width: 240px;
+  max-width: 260px;
   min-width: 0;
-  height: 22px;
-  line-height: 22px;
-  color: rgba(0, 0, 0, 0.88);
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 13px;
 }
 
 .audio-file-preview__summary-button {

@@ -106,6 +106,8 @@ export interface AudioTaskParams {
   denoiseStrength?: number;
   modelName?: string;
   device?: string;
+  /** 只输出指定的音轨；留空/空数组时输出模型全部音轨 */
+  selectedStems?: string[];
   useTta?: boolean;
   batchSize?: number;
   overlapSize?: number;
@@ -164,7 +166,19 @@ export interface MsstModelsResponse {
   modelDir: string;
   source?: string;
   fetchedAt?: string;
+  /** 推理设备选项；CUDA/MPS 可用时 label 会带上显卡/芯片名称 */
+  devices?: MsstDeviceOption[];
   error?: string;
+}
+
+export interface MsstDeviceOption {
+  value: string;
+  label: string;
+  /** 供 Select 模糊搜索的附加文本（如 CUDA + 显卡名） */
+  searchText?: string;
+  /** null 表示探测失败/未探测，前端按可用处理，避免误禁用 */
+  available?: boolean | null;
+  names?: string[];
 }
 
 export interface MsstCatalogCategory {
@@ -186,6 +200,8 @@ export interface MsstCatalogResponse {
   modelCount: number;
   models: MsstModelInfo[];
   categories: MsstCatalogCategory[];
+  /** 推理设备选项；CUDA/MPS 可用时 label 会带上显卡/芯片名称 */
+  devices?: MsstDeviceOption[];
   modelDir: string;
   error?: string;
 }
@@ -415,6 +431,14 @@ export interface AgentConversationSummary {
   updated_at: string;
   message_count: number;
   last_message: string | null;
+  running?: boolean;
+}
+
+export interface AgentConversationStatus {
+  conversation_id: string;
+  running: boolean;
+  turn_id?: string | null;
+  started_at?: string | null;
 }
 
 export interface AgentChatHandlers {
@@ -427,6 +451,13 @@ export interface AgentChatHandlers {
     name: string;
     arguments: Record<string, unknown>;
     result?: unknown;
+  }) => void;
+  onToolProgress?: (payload: {
+    tool_call_id?: string | null;
+    task_id?: string;
+    status?: string;
+    progress?: number;
+    stage?: string | null;
   }) => void;
   onDone?: (message: AgentMessage) => void;
   onError?: (error: string) => void;
@@ -459,6 +490,13 @@ function dispatchAgentEvent(raw: string, handlers: AgentChatHandlers) {
       arguments: Record<string, unknown>;
       result?: unknown;
     };
+    tool_progress?: {
+      tool_call_id?: string | null;
+      task_id?: string;
+      status?: string;
+      progress?: number;
+      stage?: string | null;
+    };
     error?: string;
   };
   try {
@@ -480,6 +518,10 @@ function dispatchAgentEvent(raw: string, handlers: AgentChatHandlers) {
   } else if (event === 'chat.tool_call') {
     if (parsed.tool_call) {
       handlers.onToolCall?.(parsed.tool_call);
+    }
+  } else if (event === 'chat.tool_progress') {
+    if (parsed.tool_progress) {
+      handlers.onToolProgress?.(parsed.tool_progress);
     }
   } else if (event === 'chat.done') {
     if (parsed.message && 'conversation_id' in parsed.message) {
@@ -527,6 +569,14 @@ export function getAgentConversations(): Promise<{
   );
 }
 
+export function getAgentConversationStatus(
+  conversationId: string,
+): Promise<AgentConversationStatus> {
+  return request<AgentConversationStatus>(
+    `/agents/conversations/${conversationId}/status`,
+  );
+}
+
 export function getAgentAccess(): Promise<AgentAccessResponse> {
   return request<AgentAccessResponse>('/agents/access');
 }
@@ -534,12 +584,23 @@ export function getAgentAccess(): Promise<AgentAccessResponse> {
 export async function streamAgentChat(
   req: AgentChatRequest,
   handlers: AgentChatHandlers,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/agents/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/agents/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+      signal: options.signal,
+    });
+  } catch (error) {
+    if ((error as { name?: string }).name === 'AbortError') {
+      throw error;
+    }
+    handlers.onError?.('无法连接 Agent 服务');
+    return;
+  }
   if (!response.ok) {
     let errorMessage = `请求失败（${response.status}）`;
     try {
@@ -561,7 +622,17 @@ export async function streamAgentChat(
   const decoder = new TextDecoder();
   let buffer = '';
   for (;;) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      if ((error as { name?: string }).name === 'AbortError') {
+        throw error;
+      }
+      handlers.onError?.('流式响应中断');
+      return;
+    }
+    const { done, value } = chunk;
     if (done) {
       break;
     }

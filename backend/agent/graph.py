@@ -25,7 +25,7 @@ from .llm import _to_openai_messages, stream_chat_completion
 from .tools import dispatch_tool, get_tool_schemas
 
 
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 16
 
 
 class AgentState(TypedDict, total=False):
@@ -87,8 +87,22 @@ def compile_agent_graph(
         for call in getattr(last_message, "tool_calls", None) or []:
             name = call.get("name") or ""
             arguments = call.get("args") or {}
+            emit(
+                "tool_call",
+                {
+                    "message_id": getattr(last_message, "id", None),
+                    "id": call.get("id"),
+                    "name": name,
+                    "arguments": arguments,
+                    "result": None,
+                },
+            )
             try:
-                result = dispatch_tool(name, arguments, context)
+                result = dispatch_tool(
+                    name,
+                    arguments,
+                    {**context, "tool_call_id": call.get("id")},
+                )
             except Exception as exc:  # noqa: BLE001 - 错误要回传给模型继续决策
                 result = {"error": str(exc)}
             emit(

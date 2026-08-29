@@ -14,6 +14,8 @@ export interface AgentToolCall {
   name: string;
   arguments?: Record<string, unknown>;
   result?: unknown;
+  /** 工具执行期间的实时进度文案（仅流式展示，不持久化） */
+  progress?: string;
 }
 
 export interface ChatMessage {

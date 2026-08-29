@@ -27,10 +27,13 @@ import {
 import type { IntentId } from '../types';
 import { pathBasename } from '../utils/format';
 
-/** 从任务记录提取输出列表：人声分离返回人声+伴奏双产物，其余返回主输出 */
+/** 从任务记录提取输出列表：人声分离/含 stem 的编排任务返回全部音轨，其余返回主输出 */
 function extractTaskOutputs(task: TaskRecord): TaskOutputFile[] {
   const outputs = task.outputs ?? [];
-  if (task.type === 'audio.vocal_separation' && outputs.length > 1) {
+  if (
+    task.type === 'audio.vocal_separation' ||
+    outputs.some((output) => output.stem)
+  ) {
     return outputs.map((output) => ({ path: output.path, stem: output.stem }));
   }
   return task.target_path ? [{ path: task.target_path }] : [];
@@ -65,15 +68,17 @@ export function WorkbenchPage() {
   const { attachments, setLocalPaths } = useFileAttachments();
   const inputPath = attachments[0]?.path;
   const conversationId = useAgentConversationStore((state) => state.conversationId);
-  const agentStreaming = useAgentConversationStore((state) => state.streaming);
   const conversationLoading = useAgentConversationStore(
     (state) => state.conversationLoading,
   );
   const setConversation = useAgentConversationStore((state) => state.setConversation);
-  const setMessages = useAgentConversationStore((state) => state.setMessages);
   const setConversationLoading = useAgentConversationStore(
     (state) => state.setConversationLoading,
   );
+  const discardConversationCache = useAgentConversationStore(
+    (state) => state.discardConversationCache,
+  );
+  const abortStream = useAgentConversationStore((state) => state.abortStream);
   const resetConversation = useAgentConversationStore((state) => state.reset);
   const setConversationFile = useAgentConversationStore(
     (state) => state.setConversationFile,
@@ -123,9 +128,8 @@ export function WorkbenchPage() {
     }
   }, [activeIntent, attachments, conversationId, urlConversationId, setLocalPaths]);
 
-  // URL 未携带会话 ID（/chat）时不路由到任何会话：仅在 URL 路由切换时
-  // 重置为空白新会话视图，避免把用户“粘”在旧会话上；同时不会误伤
-  // 正在流式输出的新会话（会话 ID 变化不会触发本逻辑）。
+  // URL 未携带会话 ID（/chat）时，始终作为“新建会话”入口：
+  // 清空当前会话状态，历史会话通过左侧会话列表手动进入。
   useEffect(() => {
     const routeKey = urlConversationId
       ? `chat:${urlConversationId}`
@@ -137,19 +141,21 @@ export function WorkbenchPage() {
     }
     lastRouteKeyRef.current = routeKey;
     if (!activeIntent && !urlConversationId) {
+      abortStream();
       const state = useAgentConversationStore.getState();
       if (state.conversationId || state.messages.length > 0) {
         resetConversation();
-        setLocalPaths([]);
-        setAgentOutputFiles(null);
-        setAgentActiveTaskId(null);
       }
+      setLocalPaths([]);
+      setAgentOutputFiles(null);
+      setAgentActiveTaskId(null);
       setConversationLoading(false);
     } else if (activeIntent) {
       // 进入人工参数页时清掉可能残留的会话加载状态，避免切回后一直转圈。
       setConversationLoading(false);
     }
   }, [
+    abortStream,
     activeIntent,
     resetConversation,
     setConversationLoading,
@@ -188,7 +194,6 @@ export function WorkbenchPage() {
     if (useAgentConversationStore.getState().streaming) {
       return;
     }
-    setMessages([]);
     setAgentOutputFiles(null);
     setAgentActiveTaskId(null);
     setConversation(urlConversationId);
@@ -213,7 +218,6 @@ export function WorkbenchPage() {
     setConversation,
     setConversationLoading,
     setLocalPaths,
-    setMessages,
   ]);
 
   useEffect(() => {
@@ -348,7 +352,7 @@ export function WorkbenchPage() {
     if (selectedConversationId === conversationId) {
       return;
     }
-    setMessages([]);
+    abortStream();
     setAgentOutputFiles(null);
     setAgentActiveTaskId(null);
     setConversation(selectedConversationId);
@@ -371,26 +375,29 @@ export function WorkbenchPage() {
   };
 
   const handleNewConversation = () => {
+    abortStream();
     resetConversation();
     setChatIntent(null);
     setLocalPaths([]);
     setAgentOutputFiles(null);
     setAgentActiveTaskId(null);
     setAgentRefreshKey((key) => key + 1);
-    navigate('/chat');
+    navigate('/chat', { state: { new: true } });
   };
 
   const handleDeleteConversation = async (selectedConversationId: string) => {
     try {
       await deleteAgentConversation(selectedConversationId);
       if (selectedConversationId === conversationId) {
+        abortStream();
         resetConversation();
         setChatIntent(null);
         setLocalPaths([]);
         setAgentOutputFiles(null);
         setAgentActiveTaskId(null);
-        navigate('/chat');
+        navigate('/chat', { state: { new: true } });
       }
+      discardConversationCache(selectedConversationId);
       setConversationFile(selectedConversationId, null);
       setAgentRefreshKey((key) => key + 1);
       message.success('会话已删除');
@@ -461,7 +468,7 @@ export function WorkbenchPage() {
           <AgentConversationSidebar
             activeConversationId={conversationId}
             refreshKey={agentRefreshKey}
-            disabled={agentStreaming || conversationLoading}
+            disabled={conversationLoading}
             onSelect={handleSelectConversation}
             onNewConversation={handleNewConversation}
             onDelete={handleDeleteConversation}

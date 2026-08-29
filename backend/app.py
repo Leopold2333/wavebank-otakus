@@ -14,7 +14,11 @@ from typing import Any
 from flask import Flask, Response, jsonify, request, send_file
 
 from . import db
-from .agent.chat import run_agent_turn
+from .agent.chat import (
+    get_active_turn,
+    get_active_turn_conversation_ids,
+    run_agent_turn,
+)
 from .agent.llm import chat_completion, list_models
 from .config import (
     CONFIG_DIR,
@@ -162,6 +166,11 @@ def create_app() -> Flask:
         if conversation_id:
             if not db.get_agent_conversation(conversation_id):
                 return jsonify({"error": f"会话不存在：{conversation_id}"}), 404
+            if get_active_turn(conversation_id):
+                return (
+                    jsonify({"error": "该会话正在处理中，请稍后再发送"}),
+                    409,
+                )
         else:
             conversation_id = str(uuid.uuid4())
             db.insert_agent_conversation(conversation_id)
@@ -259,6 +268,17 @@ def create_app() -> Flask:
                         "data: "
                         f"{json.dumps({'tool_call': data}, ensure_ascii=False)}\n\n"
                     )
+                elif event == "tool_progress":
+                    yield (
+                        "event: chat.tool_progress\n"
+                        "data: "
+                        f"{json.dumps({'tool_progress': data}, ensure_ascii=False)}\n\n"
+                    )
+                elif event in {"turn_started", "turn_finished"}:
+                    yield (
+                        f"event: chat.{event}\n"
+                        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    )
 
         return Response(
             generate(),
@@ -271,6 +291,20 @@ def create_app() -> Flask:
         if not db.get_agent_conversation(conversation_id):
             return jsonify({"error": f"会话不存在：{conversation_id}"}), 404
         return jsonify({"messages": db.list_agent_messages(conversation_id)})
+
+    @app.get("/api/agents/conversations/<conversation_id>/status")
+    def agent_conversation_status(conversation_id: str):
+        if not db.get_agent_conversation(conversation_id):
+            return jsonify({"error": f"会话不存在：{conversation_id}"}), 404
+        turn = get_active_turn(conversation_id)
+        return jsonify(
+            {
+                "conversation_id": conversation_id,
+                "running": turn is not None,
+                "turn_id": (turn or {}).get("turn_id"),
+                "started_at": (turn or {}).get("started_at"),
+            }
+        )
 
     @app.post("/api/agents/conversations/<conversation_id>/rollback")
     def rollback_agent_conversation(conversation_id: str):
@@ -291,7 +325,11 @@ def create_app() -> Flask:
 
     @app.get("/api/agents/conversations")
     def list_agent_conversations():
-        return jsonify({"conversations": db.list_agent_conversations()})
+        running_ids = get_active_turn_conversation_ids()
+        conversations = db.list_agent_conversations()
+        for item in conversations:
+            item["running"] = item["id"] in running_ids
+        return jsonify({"conversations": conversations})
 
     @app.delete("/api/agents/conversations/<conversation_id>")
     def delete_agent_conversation(conversation_id: str):

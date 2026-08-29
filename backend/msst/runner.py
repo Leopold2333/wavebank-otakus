@@ -23,6 +23,8 @@ from pathlib import Path
 
 _REAL_STDOUT = sys.stdout
 
+_DOWNLOAD_SOURCES = ("modelscope", "huggingface", "hf-mirror")
+
 
 def _emit(payload: dict) -> None:
     _REAL_STDOUT.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -64,7 +66,6 @@ def _attach_library_logging() -> None:
 
 
 def _run(payload: dict) -> None:
-    import numpy as np
     from pymss import MSSeparator, load_audio
     from pymss.model_download import download_model
     from pymss.model_registry import resolve_model
@@ -79,6 +80,17 @@ def _run(payload: dict) -> None:
     download_source = str(payload.get("downloadSource") or "modelscope")
     use_tta = bool(payload.get("useTta"))
     inference_params = dict(payload.get("inferenceParams") or {})
+    raw_stems = payload.get("stems") or None
+    if isinstance(raw_stems, str):
+        selected_stems = [raw_stems]
+    elif isinstance(raw_stems, list):
+        selected_stems = [
+            str(item).strip() for item in raw_stems if str(item).strip()
+        ]
+    else:
+        selected_stems = None
+    if selected_stems is not None and not selected_stems:
+        selected_stems = None
 
     if not input_path.is_file():
         raise FileNotFoundError(f"输入文件不存在：{input_path}")
@@ -125,12 +137,29 @@ def _run(payload: dict) -> None:
 
         _log(f"[vocal_separation] 模型未缓存，开始下载：{model_name}")
         _progress(0.0, "下载模型")
-        download_model(
-            model_name,
-            model_dir=model_dir,
-            source=download_source,
-            progress_callback=download_progress,
-        )
+        sources = [download_source] + [
+            source
+            for source in _DOWNLOAD_SOURCES
+            if source != download_source
+        ]
+        result = None
+        last_error: Exception | None = None
+        for source in sources:
+            try:
+                result = download_model(
+                    model_name,
+                    model_dir=model_dir,
+                    source=source,
+                    # 备用源不再请求已 500 的 ModelScope 文件索引
+                    verify=source == "modelscope",
+                    progress_callback=download_progress,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - 需要尝试下一个下载源
+                last_error = exc
+                _log(f"[vocal_separation] 下载源 {source} 失败：{exc}")
+        if result is None:
+            raise last_error or RuntimeError("所有下载源均失败")
         _progress(download_end, "下载模型")
 
     # ---- 阶段 2：加载模型（含 Torch 权重加载），约 5% 区间 ----
@@ -182,44 +211,39 @@ def _run(payload: dict) -> None:
         _progress(infer_start, "读取音频")
 
         # ---- 阶段 4：分离推理，占 infer_start-95% ----
-        _log("[vocal_separation] 正在分离人声与伴奏……")
-        _progress(infer_start, "分离推理")
-        results = separator.separate(mix, pbar=False)
-        _progress(infer_end, "分离推理")
-
-        vocals_key = next(
-            (key for key in results if str(key).strip().lower() == "vocals"),
-            None,
-        )
-        if vocals_key is None:
-            raise RuntimeError("分离模型没有返回人声 stem，请更换模型")
-        vocals = results.pop(vocals_key)
-        others = list(results.values())
-        if others:
-            instrumental = (
-                others[0]
-                if len(others) == 1
-                else np.sum(np.stack(others, axis=0), axis=0)
+        if selected_stems:
+            _log(
+                "[vocal_separation] 正在分离音轨："
+                + " / ".join(selected_stems)
             )
         else:
-            # 模型只给出人声：用“原曲 - 人声”近似伴奏
-            instrumental = np.asarray(mix, dtype=np.float32).T - np.asarray(
-                vocals, dtype=np.float32
-            )
+            _log("[vocal_separation] 正在分离全部音轨……")
+        _progress(infer_start, "分离推理")
+        results = separator.separate(mix, pbar=False, stems=selected_stems)
+        _progress(infer_end, "分离推理")
+
+        if not results:
+            raise RuntimeError("模型没有返回任何音轨，请检查所选音轨")
 
         # ---- 阶段 5：写出结果 ----
         _progress(infer_end, "写出结果")
         base_name = output_name or input_path.stem or "output"
         base_name = Path(base_name).name.strip() or (input_path.stem or "output")
         outputs: list[dict] = []
-        for stem, audio in (("vocals", vocals), ("instrumental", instrumental)):
-            file_name = f"{base_name}_{stem}"
+        for stem, audio in results.items():
+            stem_name = str(stem).strip()
+            safe_stem = stem_name.lower()
+            file_name = f"{base_name}_{safe_stem}"
             separator.save_audio(audio, sr, file_name, str(output_dir))
             path = output_dir / f"{file_name}.{output_format}"
             if not path.is_file():
                 raise RuntimeError(f"未能写出分离结果：{path}")
             outputs.append(
-                {"path": str(path), "stem": stem, "size": path.stat().st_size}
+                {
+                    "path": str(path),
+                    "stem": safe_stem,
+                    "size": path.stat().st_size,
+                }
             )
         _emit({"type": "outputs", "outputs": outputs})
         _progress(99.0, "写出结果")

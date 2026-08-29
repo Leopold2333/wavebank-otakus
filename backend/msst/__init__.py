@@ -29,6 +29,7 @@ from typing import Any, Callable
 from ..config import PROJECT_ROOT, resolve_project_path
 from .catalog import (
     VOCAL_SEPARATION_CATEGORY,
+    default_model_for_models,
     get_catalog,
     is_model_downloaded,
     model_config_info,
@@ -37,7 +38,8 @@ from .catalog import (
 
 # 人声/伴奏双向分离的 pymss catalog secondary_category
 MSST_MODEL_CATEGORY = VOCAL_SEPARATION_CATEGORY
-# 输出固定为“人声 + 伴奏”两条音轨；与 pymss 支持的无损/有损格式对齐
+# 输出音轨由模型与 selectedStems 决定（默认全部，可只保留个别）；
+# 输出格式与 pymss 支持的无损/有损格式对齐
 MSST_OUTPUT_FORMATS = ("wav", "flac", "mp3")
 MSST_DEVICES = ("auto", "cpu", "cuda", "mps", "mlx")
 DEFAULT_MSST_MODEL = "MDX23C-8KFFT-InstVoc_HQ.ckpt"
@@ -48,7 +50,11 @@ RUNNER_TIMEOUT_SECONDS = 6 * 3600
 
 RUNNER_PATH = Path(__file__).resolve().parent / "runner.py"
 DOWNLOADER_PATH = Path(__file__).resolve().parent / "downloader.py"
+DEVICE_PROBE_PATH = Path(__file__).resolve().parent / "device_probe.py"
 _DOWNLOAD_LOG_LIMIT = 200
+_DEVICE_PROBE_TTL_SECONDS = 300
+_device_probe_lock = threading.Lock()
+_device_probe_cache: dict[str, Any] = {"at": 0.0, "data": None}
 
 
 class MsstError(RuntimeError):
@@ -107,7 +113,7 @@ def list_msst_models() -> list[dict[str, Any]]:
 
 
 def describe_msst_runtime() -> dict[str, Any]:
-    """Snapshot for the vocal separation page: model list + default model."""
+    """Snapshot for the vocal separation page: models + device options."""
     model_dir = resolve_model_dir()
     try:
         catalog = get_catalog(model_dir)
@@ -135,13 +141,62 @@ def describe_msst_runtime() -> dict[str, Any]:
         "modelDir": str(model_dir),
         "source": catalog.get("source", "") if available else "",
         "fetchedAt": catalog.get("fetchedAt", "") if available else "",
+        "devices": describe_msst_devices()["devices"],
         "error": error,
     }
+
+
+def _default_device_options() -> list[dict[str, Any]]:
+    return [
+        {"value": "auto", "label": "自动", "available": True, "names": []},
+        {"value": "cpu", "label": "CPU", "available": True, "names": []},
+        {"value": "cuda", "label": "CUDA", "available": None, "names": []},
+        {"value": "mps", "label": "MPS", "available": None, "names": []},
+        {"value": "mlx", "label": "MLX", "available": None, "names": []},
+    ]
+
+
+def describe_msst_devices() -> dict[str, Any]:
+    """Return inference device options (CUDA labels enriched with GPU names)."""
+    now = time.monotonic()
+    with _device_probe_lock:
+        cached = _device_probe_cache.get("data")
+        if (
+            cached is not None
+            and now - float(_device_probe_cache["at"]) < _DEVICE_PROBE_TTL_SECONDS
+        ):
+            return cached
+
+    data: dict[str, Any] | None = None
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-X", "utf8", str(DEVICE_PROBE_PATH)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            cwd=str(PROJECT_ROOT),
+        )
+        if proc.returncode == 0:
+            parsed = json.loads(proc.stdout)
+            if isinstance(parsed.get("devices"), list):
+                data = parsed
+    except (OSError, subprocess.SubprocessError, ValueError):
+        data = None
+
+    if data is None:
+        data = {"probed": False, "devices": _default_device_options()}
+
+    with _device_probe_lock:
+        _device_probe_cache.update(at=time.monotonic(), data=data)
+    return data
 
 
 def describe_pymss_catalog() -> dict[str, Any]:
     """Full pymss catalog grouped by category, for future feature pages."""
     model_dir = resolve_model_dir()
+    devices = describe_msst_devices()["devices"]
     try:
         catalog = get_catalog(model_dir)
         catalog = {
@@ -149,13 +204,26 @@ def describe_pymss_catalog() -> dict[str, Any]:
             "available": True,
             "error": "",
             "modelDir": str(model_dir),
+            "devices": devices,
             "models": [_model_summary(item, model_dir) for item in catalog["models"]],
             "categories": [
                 {
                     **primary,
+                    "defaultModel": (
+                        default_model_for_models(
+                            primary["secondaryCategories"][0]["secondaryCategory"],
+                            primary["secondaryCategories"][0]["models"],
+                        )
+                        if primary["secondaryCategories"]
+                        else ""
+                    ),
                     "secondaryCategories": [
                         {
                             **secondary,
+                            "defaultModel": default_model_for_models(
+                                secondary["secondaryCategory"],
+                                secondary["models"],
+                            ),
                             "models": [
                                 _model_summary(item, model_dir)
                                 for item in secondary["models"]
@@ -177,6 +245,7 @@ def describe_pymss_catalog() -> dict[str, Any]:
             "models": [],
             "categories": [],
             "modelDir": str(model_dir),
+            "devices": devices,
             "error": str(exc),
         }
 
@@ -187,7 +256,7 @@ def validate_msst_model(model_name: str) -> str:
     if not name:
         raise MsstError("缺少分离模型名称")
     catalog = get_catalog(resolve_model_dir())
-    models = models_for_category(catalog, MSST_MODEL_CATEGORY)
+    models = catalog.get("models") or []
     if not models and catalog.get("source") == "none":
         # pymss 未安装/不可解析：交给 runner 报出明确的底层错误
         return name
@@ -199,7 +268,7 @@ def validate_msst_model(model_name: str) -> str:
     if name.lower() in known:
         return known[name.lower()]
     raise MsstError(
-        f"未知或不支持的人声分离模型：{model_name}（仅支持人声/伴奏双向分离类模型）"
+        f"未知或不支持的人声分离模型：{model_name}"
     )
 
 
@@ -209,11 +278,10 @@ def msst_model_downloaded(model_name: str) -> bool:
     if not name:
         return False
     catalog = get_catalog(resolve_model_dir())
-    models = models_for_category(catalog, MSST_MODEL_CATEGORY)
     entry = next(
         (
             item
-            for item in models
+            for item in catalog.get("models") or []
             if str(item["name"]).lower() == name.lower()
         ),
         None,
@@ -587,6 +655,7 @@ def run_vocal_separation(
     download_source: str = DEFAULT_DOWNLOAD_SOURCE,
     use_tta: bool = False,
     inference_params: dict[str, Any] | None = None,
+    selected_stems: list[str] | None = None,
     on_log: Callable[[str], None] | None = None,
     on_progress: Callable[[float], None] | None = None,
     on_stage: Callable[[str], None] | None = None,
@@ -596,13 +665,18 @@ def run_vocal_separation(
     """Run vocal separation in a subprocess and stream events back.
 
     Returns ``{"outputs": [{"path", "stem", "size"}, ...], "targetPath": str}``
-    where ``targetPath`` points at the vocals track.
+    where ``targetPath`` points at the first output track.
     """
 
     def log(message: str) -> None:
         if on_log:
             on_log(message)
 
+    stems = (
+        [str(stem).strip() for stem in selected_stems or [] if str(stem).strip()]
+        if selected_stems
+        else None
+    )
     payload = {
         "inputPath": str(input_path),
         "outputDir": str(output_dir),
@@ -613,12 +687,30 @@ def run_vocal_separation(
         "outputName": str(output_name or ""),
         "downloadSource": str(download_source or DEFAULT_DOWNLOAD_SOURCE),
         "useTta": bool(use_tta),
+        "stems": stems,
         # 只传调用方显式给出的键；未包含的键沿用模型 catalog 推荐值
         "inferenceParams": {k: v for k, v in (inference_params or {}).items()},
     }
 
     if not msst_model_downloaded(model_name):
         log(f"[vocal_separation] 模型未缓存，将自动下载：{model_name}")
+        # 若用户/Agent 已启动同一模型的预下载，先等它完成，避免两个
+        # 下载进程同时写 .part 文件；超时后交给 runner 自行处理。
+        wait_deadline = time.monotonic() + 600
+        last_wait_log = 0.0
+        while True:
+            with _download_lock:
+                wait_state = _download_states.get(model_name)
+                wait_status = (
+                    wait_state.get("status") if wait_state else None
+                )
+            if wait_status != "downloading" or time.monotonic() >= wait_deadline:
+                break
+            now = time.monotonic()
+            if now - last_wait_log >= 10:
+                log(f"[vocal_separation] 等待模型预下载完成：{model_name} …")
+                last_wait_log = now
+            time.sleep(2)
 
     command = [sys.executable, "-X", "utf8", str(RUNNER_PATH)]
     try:

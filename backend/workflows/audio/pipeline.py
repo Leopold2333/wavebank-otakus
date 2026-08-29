@@ -21,8 +21,9 @@ PIPELINE_FINAL_PARAM_KEYS = {
     "loudnessTarget",
 }
 PIPELINE_STEP_LIMIT = 8
-# 人声分离会输出人声+伴奏两个文件，无法作为中间步骤继续衔接，必须收尾。
-PIPELINE_TERMINAL_SUBTYPES = {"vocal_separation"}
+# 人声分离可以输出多条音轨；作为中间步骤时必须只保留一个音轨，
+# 否则无法确定下一步的输入文件。
+PIPELINE_SINGLE_OUTPUT_SUBTYPES = {"vocal_separation"}
 
 
 class AudioPipelineState(TypedDict, total=False):
@@ -70,13 +71,16 @@ def normalize_pipeline_steps(params: dict[str, Any]) -> list[dict[str, Any]]:
             subtype = str(raw_step.get("subtype") or "").strip()
             task_type = f"audio.{subtype}" if subtype else ""
         subtype = _audio_task_type_to_subtype(task_type)
-        if subtype in PIPELINE_TERMINAL_SUBTYPES and index != len(raw_steps):
-            raise ValueError(
-                f"第 {index} 个编排步骤（{subtype}）只能作为编排任务的最后一步"
-            )
         raw_params = raw_step.get("params") or {}
         if not isinstance(raw_params, dict):
             raise ValueError(f"第 {index} 个编排步骤的 params 必须是对象")
+        if subtype in PIPELINE_SINGLE_OUTPUT_SUBTYPES and index != len(raw_steps):
+            stems = raw_params.get("selectedStems") or raw_params.get("stems")
+            if not isinstance(stems, list) or len(stems) != 1:
+                raise ValueError(
+                    f"第 {index} 个编排步骤（{subtype}）作为中间步骤时，"
+                    "selectedStems 必须且只能指定一个音轨"
+                )
         steps.append(
             {
                 "index": index,
@@ -194,27 +198,42 @@ def compile_audio_pipeline_graph(
         if command:
             commands.append(command)
 
+        step_outputs = step_state.get("outputs") or []
         target_path = str(step_state.get("target_path") or "")
         if not target_path:
-            step_outputs = step_state.get("outputs") or []
             target_path = str(step_outputs[0]["path"]) if step_outputs else ""
         if not target_path:
             raise RuntimeError(f"第 {step['index']} 步没有生成输出文件")
 
         output_path = Path(target_path)
-        outputs = [
-            *state.get("outputs", []),
-            {
-                "path": str(output_path),
-                "size": output_path.stat().st_size if output_path.exists() else 0,
-                "step": step["index"],
-                "task_type": step["task_type"],
-            },
-        ]
+        if step_outputs:
+            step_records = [
+                {
+                    "path": str(item.get("path") or ""),
+                    "size": item.get("size") or 0,
+                    "step": step["index"],
+                    "task_type": step["task_type"],
+                    "stem": item.get("stem"),
+                }
+                for item in step_outputs
+                if item.get("path")
+            ]
+        else:
+            step_records = [
+                {
+                    "path": str(output_path),
+                    "size": (
+                        output_path.stat().st_size if output_path.exists() else 0
+                    ),
+                    "step": step["index"],
+                    "task_type": step["task_type"],
+                    "stem": None,
+                }
+            ]
         return {
             "commands": commands,
             "command": commands[-1] if commands else None,
-            "outputs": outputs,
+            "outputs": [*state.get("outputs", []), *step_records],
             "current_input": str(output_path),
             "target_path": str(output_path),
             "step_offset": state.get("step_offset", 0) + 1,

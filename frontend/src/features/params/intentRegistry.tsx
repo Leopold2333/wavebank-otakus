@@ -13,6 +13,8 @@ import type { IntentId } from '../../types';
 export interface IntentFieldOption {
   label: string;
   value: string | number;
+  /** 探测/平台不可用时不参与选择 */
+  disabled?: boolean;
   /** 供 Select 模糊搜索的附加文本（别名/分类等） */
   searchText?: string;
 }
@@ -24,6 +26,8 @@ export interface IntentField {
   placeholder?: string;
   tooltip?: ReactNode;
   options?: IntentFieldOption[];
+  /** 下拉是否允许多选（用于音轨选择等数组型字段） */
+  multiple?: boolean;
   min?: number;
   max?: number;
   step?: number;
@@ -114,15 +118,14 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
     id: 'separation',
     label: '人声分离',
     agent: 'separation_agent',
-    description: '基于 MSST 模型分离人声与伴奏，输出两条音轨',
+    description: '基于 MSST 模型分离音频，按需输出一条或多条音轨',
     icon: <ScissorOutlined />,
     fields: [
       {
         name: 'modelName',
         label: '分离模型',
         type: 'select',
-        defaultValue: 'MDX23C-8KFFT-InstVoc_HQ.ckpt',
-        tooltip: '模型列表来自后端 pymss 目录；仅展示已下载的模型，下载入口在设置页。',
+        tooltip: '模型列表来自后端 pymss 目录，按超大类 / 大类 / 任务小类 / 模型名称四级选择。',
         options: [
           { label: 'MDX23C-8KFFT-InstVoc_HQ（默认）', value: 'MDX23C-8KFFT-InstVoc_HQ.ckpt' },
         ],
@@ -141,6 +144,13 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
         ],
       },
       {
+        name: 'selectedStems',
+        label: '输出音轨',
+        type: 'select',
+        multiple: true,
+        tooltip: '不选则输出模型全部音轨；可按需只保留个别音轨',
+      },
+      {
         name: 'useTta',
         label: '测试时增强（TTA）',
         type: 'switch',
@@ -156,27 +166,27 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
         max: 16777216,
         placeholder: '模型默认',
         advanced: true,
-        tooltip: '留空使用模型推荐值；增大可提速但占用更多内存',
+        tooltip: '增大批大小会占用更多显存；在显存未占满前，通常可加快处理速度。',
       },
       {
         name: 'overlapSize',
-        label: '分块重叠（采样数）',
+        label: '窗口重叠长度（采样数）',
         type: 'number',
         min: 1,
         max: 16777216,
         placeholder: '模型默认',
         advanced: true,
-        tooltip: '留空使用模型推荐值；增大可减少分块接缝伪影，但更耗时',
+        tooltip: '重叠越短，处理越快，但音轨边界可能更粗糙；重叠越长，效果越细腻，但耗时更久。',
       },
       {
         name: 'chunkSize',
-        label: '分块大小（采样数）',
+        label: '分切片大小（采样数）',
         type: 'number',
         min: 1,
         max: 16777216,
         placeholder: '模型默认',
         advanced: true,
-        tooltip: '留空使用模型推荐值；调整不当可能降低质量或耗尽内存',
+        tooltip: '单个窗口的时间帧数（=采样率 × 秒数）。数值越大分离效果通常越好，但处理更慢、显存占用更高。',
       },
       {
         name: 'standardize',
@@ -209,7 +219,7 @@ export const INTENT_DEFINITIONS: IntentDefinition[] = [
         name: 'outputFileName',
         label: '输出文件名',
         type: 'text',
-        placeholder: '默认沿用输入文件名，产物自动追加 _vocals / _instrumental',
+        placeholder: '默认沿用输入文件名，产物自动追加音轨后缀（如 _vocals / _instrumental）',
       },
     ],
   },

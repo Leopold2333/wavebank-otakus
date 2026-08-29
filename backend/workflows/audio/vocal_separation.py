@@ -1,8 +1,9 @@
 """Vocal separation (MSST) subgraph.
 
-Unlike the ffmpeg-based subtypes this graph produces two outputs (vocals and
-instrumental), so it owns its prepare/execute/verify/summarize flow instead of
-reusing ``build_audio_graph``. Inference runs in the ``backend.msst`` runner
+Unlike the ffmpeg-based subtypes this graph produces one or more model stems
+(vocals / instrumental / other model-dependent tracks), so it owns its
+prepare/execute/verify/summarize flow instead of reusing
+``build_audio_graph``. Inference runs in the ``backend.msst`` runner
 subprocess; the graph only orchestrates state, progress, logs and cancellation.
 """
 
@@ -45,6 +46,25 @@ def _first_param_value(params: dict[str, Any], camel: str, snake: str) -> Any:
     if camel in params:
         return params[camel]
     return params.get(snake)
+
+
+def _normalize_selected_stems(params: dict[str, Any]) -> list[str] | None:
+    """Normalize the requested output stems; ``None`` means output all stems."""
+    raw = params.get("selectedStems")
+    if raw is None:
+        raw = params.get("stems")
+    if raw in (None, "", [], ()):
+        return None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        raise MsstError("输出音轨必须是字符串列表")
+    stems = [
+        str(item).strip().lower()
+        for item in raw
+        if str(item).strip()
+    ]
+    return stems or None
 
 
 def _collect_inference_params(params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -131,11 +151,13 @@ def prepare(state: AudioState) -> dict[str, Any]:
     task_dir.mkdir(parents=True, exist_ok=True)
 
     base = _resolve_output_basename(params, input_path)
-    vocals_path = task_dir / f"{base}_vocals.{output_format}"
+    selected_stems = _normalize_selected_stems(params)
+    first_stem = selected_stems[0] if selected_stems else "vocals"
+    first_output_path = task_dir / f"{base}_{first_stem}.{output_format}"
     return {
         "input_path": str(input_path),
-        "output_path": str(vocals_path),
-        "target_path": str(vocals_path),
+        "output_path": str(first_output_path),
+        "target_path": str(first_output_path),
     }
 
 
@@ -150,6 +172,7 @@ def make_execute_node(
         params = state["params"]
         input_path = Path(state["input_path"])
         use_tta, inference_params = _collect_inference_params(params)
+        selected_stems = _normalize_selected_stems(params)
         result = run_vocal_separation(
             input_path=str(input_path),
             output_dir=str(Path(state["output_path"]).parent),
@@ -159,6 +182,7 @@ def make_execute_node(
             output_name=_resolve_output_basename(params, input_path),
             use_tta=use_tta,
             inference_params=inference_params,
+            selected_stems=selected_stems,
             on_log=on_log,
             on_progress=on_progress,
             on_stage=on_stage,
@@ -175,8 +199,8 @@ def make_execute_node(
 
 def verify(state: AudioState) -> dict[str, Any]:
     outputs = state.get("outputs") or []
-    if len(outputs) < 2:
-        raise RuntimeError("人声分离应输出人声与伴奏两个文件")
+    if not outputs:
+        raise RuntimeError("人声分离没有生成任何输出文件")
     for output in outputs:
         path = Path(str(output.get("path", "")))
         if not path.is_file() or path.stat().st_size == 0:
